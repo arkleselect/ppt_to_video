@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Runtime storage
+backend/storage/
+
+# Generated media / build artifacts
+*_build/
+*.mp4
+*.mp3
+*.pdf
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Editors
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
