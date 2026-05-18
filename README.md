@@ -68,7 +68,37 @@ MP4
 
 ## 快速开始
 
-### 1. 启动后端
+### 1. 克隆仓库
+
+```bash
+git clone git@github.com:arkleselect/ppt_to_video.git
+cd ppt_to_video
+```
+
+### 2. 准备后端环境
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+```
+
+### 3. 安装系统依赖
+
+macOS 可使用 Homebrew：
+
+```bash
+brew install ffmpeg poppler
+brew install --cask libreoffice
+```
+
+其中：
+
+- `ffmpeg`：负责音视频合成
+- `libreoffice`：负责将 PPTX 导出为 PDF
+- `pdftoppm`（来自 `poppler`）：负责将 PDF 渲染为图片
+
+### 4. 启动后端
 
 ```bash
 python3 backend/app.py
@@ -80,7 +110,7 @@ python3 backend/app.py
 http://127.0.0.1:5050
 ```
 
-### 2. 启动前端
+### 5. 启动前端
 
 ```bash
 cd frontend
@@ -131,7 +161,7 @@ done
 Python 依赖示例：
 
 ```bash
-pip install flask edge-tts mutagen
+pip install -r backend/requirements.txt
 ```
 
 ## 适用场景
@@ -153,4 +183,3 @@ pip install flask edge-tts mutagen
 - [ ] 增加 PPT 页面预览
 - [ ] 支持批量任务队列
 - [ ] 支持更多中文音色与 SSML 配置
-
