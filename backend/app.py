@@ -5,6 +5,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import sys
 import threading
 import uuid
 from datetime import datetime
@@ -101,7 +102,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
     job = jobs[job_id]
     out = JOB_DIR / f"{src.stem}-{job_id}.mp4"
     cmd = [
-        "python3",
+        sys.executable,
         str(BASE_DIR / "ppt_to_video.py"),
         str(src),
         "--output",
@@ -139,11 +140,14 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         append_server_log(f"任务 {job_id} 已完成。")
     else:
         job["status"] = "error"
+        append_server_log(f"任务 {job_id} 子进程返回码：{returncode}", "error")
+        if job["stdout"].strip():
+            append_server_log(f"STDOUT:\n{job['stdout'].strip()}", "error")
         if stderr:
             print(stderr, flush=True)
             first_line = stderr.strip().splitlines()[-1]
             append_log(job, first_line, "失败")
-            append_server_log(stderr.strip(), "error")
+            append_server_log(f"STDERR:\n{stderr.strip()}", "error")
         append_log(job, "视频生成失败。", "失败")
         append_server_log(f"任务 {job_id} 失败。", "error")
 
