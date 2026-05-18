@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles } from 'lucide-vue-next'
+import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles, Square, X } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
 const selectedFile = ref(null)
@@ -41,6 +41,15 @@ function setFile(file) {
   analysis.value = null
   logs.value = []
   downloadUrl.value = ''
+}
+
+function clearFile() {
+  selectedFile.value = null
+  fileName.value = '还没有文件'
+  uploadId.value = ''
+  analysis.value = null
+  downloadUrl.value = ''
+  logs.value = []
 }
 
 function onDrop(event) {
@@ -139,6 +148,13 @@ async function generateVideo() {
   pollJob()
 }
 
+async function stopGeneration() {
+  if (!jobId.value || !isGenerating.value) return
+  await fetch(`/api/jobs/${jobId.value}/stop`, { method: 'POST' })
+  isGenerating.value = false
+  addLog('已请求停止视频生成。', '已停止')
+}
+
 async function pollJob() {
   const timer = setInterval(async () => {
     const data = await fetch(`/api/jobs/${jobId.value}`).then((r) => r.json())
@@ -190,6 +206,10 @@ onMounted(loadVoices)
           <strong>拖入 PPTX，或点击选择文件</strong>
           <span>{{ fileName }}</span>
         </label>
+        <button v-if="selectedFile" class="clear-file" @click="clearFile">
+          <X :size="15" />
+          清除上传的 PPT
+        </button>
         <div class="timeline">
           <div class="step">
             <b>01</b>
@@ -269,6 +289,10 @@ onMounted(loadVoices)
             <LoaderCircle v-if="isPreviewing" :size="16" class="spin" />
             <Play v-else :size="16" />
             {{ isPreviewing ? '生成试听中' : '试听音色' }}
+          </button>
+          <button v-if="isGenerating" class="danger" @click="stopGeneration">
+            <Square :size="15" />
+            停止生成
           </button>
         </div>
         <audio v-if="audioUrl" class="audio" :src="audioUrl" controls autoplay />

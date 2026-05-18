@@ -127,6 +127,21 @@ button {
   font-weight: 500;
 }
 
+.clear-file {
+  margin-top: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+}
+
+.clear-file:hover {
+  color: var(--accent-deep);
+}
+
 .timeline {
   margin-top: 22px;
   display: grid;
@@ -263,6 +278,12 @@ input {
   color: var(--ink);
 }
 
+.danger {
+  border-color: rgba(162, 79, 44, .35) !important;
+  background: rgba(162, 79, 44, .08);
+  color: var(--accent-deep);
+}
+
 .primary:hover {
   background: var(--accent-deep);
 }
@@ -270,6 +291,10 @@ input {
 .secondary:hover {
   border-color: var(--accent) !important;
   background: rgba(162, 79, 44, .06);
+}
+
+.danger:hover {
+  background: rgba(162, 79, 44, .14);
 }
 
 .audio {

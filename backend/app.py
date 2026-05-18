@@ -105,6 +105,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
     job["status"] = "running"
     append_log(job, "任务已启动。")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    job["process"] = proc
     stdout_lines = []
     assert proc.stdout is not None
     for line in proc.stdout:
@@ -116,7 +117,10 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
     returncode = proc.wait()
     job["stdout"] = "".join(stdout_lines)
     job["stderr"] = stderr
-    if returncode == 0:
+    job.pop("process", None)
+    if job.get("status") == "stopped":
+        append_log(job, "视频生成已停止。", "已停止")
+    elif returncode == 0:
         job["status"] = "done"
         job["output"] = out.name
         append_log(job, "视频生成完成。", "完成")
@@ -144,7 +148,24 @@ def generate():
 
 @app.get("/api/jobs/<job_id>")
 def job_status(job_id: str):
-    return jsonify(jobs.get(job_id, {"status": "missing"}))
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"status": "missing"})
+    safe_job = {k: v for k, v in job.items() if k != "process"}
+    return jsonify(safe_job)
+
+
+@app.post("/api/jobs/<job_id>/stop")
+def stop_job(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "任务不存在"}), 404
+    proc = job.get("process")
+    if proc and proc.poll() is None:
+        proc.terminate()
+        job["status"] = "stopped"
+        append_log(job, "收到停止请求，正在终止任务。", "已停止")
+    return jsonify({"status": job["status"]})
 
 
 @app.get("/api/download/<filename>")
