@@ -143,6 +143,24 @@ button {
   background: rgba(162, 79, 44, .1);
 }
 
+.utility {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 249, .78);
+  color: var(--ink);
+  padding: 9px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  transition: .18s ease;
+}
+
+.utility:hover {
+  border-color: var(--accent);
+  background: rgba(162, 79, 44, .06);
+}
+
 .upload-actions {
   display: flex;
   gap: 10px;

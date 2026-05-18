@@ -254,7 +254,7 @@ watch(selectedRate, () => {
           <button v-if="selectedFile" class="clear-file" @click="clearFile">
             清除
           </button>
-          <button class="secondary" @click="analyzeFile">
+          <button class="utility" @click="analyzeFile">
             <LoaderCircle v-if="isAnalyzing" :size="16" class="spin" />
             {{ isAnalyzing ? '分析中' : '分析课件' }}
           </button>
