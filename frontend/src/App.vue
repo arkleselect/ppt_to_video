@@ -380,6 +380,10 @@ watch(selectedRate, () => {
             停止生成
           </button>
         </div>
+        <a v-if="downloadUrl" class="download" :href="downloadUrl">
+          <Download :size="16" />
+          下载生成视频
+        </a>
         <audio v-if="audioUrl" class="audio" :src="audioUrl" controls autoplay />
       </article>
     </section>
@@ -409,10 +413,6 @@ watch(selectedRate, () => {
           <span class="log-state" :class="{ done: item.state === '完成' }">{{ item.state }}</span>
         </div>
       </div>
-      <a v-if="downloadUrl" class="download" :href="downloadUrl">
-        <Download :size="16" />
-        下载生成视频
-      </a>
       <section v-if="showServerLogs" class="server-log-panel">
         <div class="section-head inline-log-head">
           <h2>后端日志</h2>
