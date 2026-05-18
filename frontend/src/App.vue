@@ -250,10 +250,10 @@ watch(selectedRate, () => {
           <strong>拖入 PPTX，或点击选择文件</strong>
           <span>{{ fileName }}</span>
         </label>
-        <button v-if="selectedFile" class="clear-file" @click="clearFile">
-          清除上传的 PPT
-        </button>
         <div class="upload-actions">
+          <button v-if="selectedFile" class="clear-file" @click="clearFile">
+            清除
+          </button>
           <button class="secondary" @click="analyzeFile">
             <LoaderCircle v-if="isAnalyzing" :size="16" class="spin" />
             {{ isAnalyzing ? '分析中' : '分析课件' }}

@@ -128,17 +128,19 @@ button {
 }
 
 .clear-file {
-  margin-top: 12px;
-  border: 0;
-  background: transparent;
+  border: 1px solid rgba(162, 79, 44, .28);
+  border-radius: var(--radius-sm);
+  background: rgba(162, 79, 44, .05);
   color: #b97467;
   display: inline-flex;
   align-items: center;
-  padding: 0;
+  padding: 9px 12px;
+  font-size: 14px;
 }
 
 .clear-file:hover {
   color: var(--accent);
+  background: rgba(162, 79, 44, .1);
 }
 
 .upload-actions {
