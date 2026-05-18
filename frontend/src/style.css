@@ -414,7 +414,13 @@ input {
   margin-bottom: 0;
 }
 
-.section-head span {
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-title span {
   color: var(--ink-soft);
   font-size: 14px;
 }

@@ -76,6 +76,10 @@ function addLog(text, state = '进行中') {
   })
 }
 
+function clearLogs() {
+  logs.value = []
+}
+
 async function loadVoices() {
   voices.value = await fetch('/api/voices').then((r) => r.json())
   selectedVoice.value = voices.value.find((v) => v.id === 'zh-CN-XiaoxiaoNeural')?.id || voices.value[0]?.id || ''
@@ -382,9 +386,8 @@ watch(selectedRate, () => {
 
     <section class="card log">
       <div class="section-head">
-        <h2>追踪日志</h2>
-        <div class="section-tools">
-          <button class="utility compact" @click="loadServerLogs">查看日志</button>
+        <div class="section-title">
+          <h2>追踪日志</h2>
           <span>
             {{
               analysis
@@ -392,6 +395,10 @@ watch(selectedRate, () => {
                 : '等待课件分析'
             }}
           </span>
+        </div>
+        <div class="section-tools">
+          <button class="utility compact" @click="loadServerLogs">查看日志</button>
+          <button class="utility compact" @click="clearLogs">清空日志</button>
         </div>
       </div>
       <div class="log-list">
