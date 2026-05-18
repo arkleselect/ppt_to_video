@@ -1,25 +1,167 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { Check, ChevronDown, FileUp, Play, Sparkles } from 'lucide-vue-next'
+import { onMounted, ref } from 'vue'
+import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
-const selectedVoice = ref('晓晓 · 普通话 · 女声')
-const selectedRate = ref('自然偏稳')
+const selectedFile = ref(null)
+const uploadId = ref('')
+const selectedVoice = ref('')
+const selectedRate = ref('-5%')
 const voiceOpen = ref(false)
 const rateOpen = ref(false)
+const isDragging = ref(false)
+const isAnalyzing = ref(false)
+const isPreviewing = ref(false)
+const isGenerating = ref(false)
+const analysis = ref(null)
+const jobId = ref('')
+const jobStatus = ref('')
+const lastPolledStatus = ref('')
+const downloadUrl = ref('')
+const audioUrl = ref('')
 
-const voices = ['晓晓 · 普通话 · 女声', '云健 · 普通话 · 男声']
-const rates = ['自然偏稳', '标准', '偏慢']
-
-const logs = [
-  { time: '14:02:11', text: '已读取 PPT，发现 80 页，备注完整。', state: '完成' },
-  { time: '14:02:19', text: '已清理页码与日期噪音。', state: '完成' },
-  { time: '14:02:44', text: '正在生成中文配音，第 12 / 80 页。', state: '进行中' },
+const voices = ref([])
+const rates = [
+  { label: '偏慢', value: '-15%' },
+  { label: '自然偏稳', value: '-5%' },
+  { label: '标准', value: '+0%' },
+  { label: '偏快', value: '+10%' },
 ]
+const logs = ref([])
 
 function onFileChange(event) {
-  fileName.value = event.target.files?.[0]?.name || '还没有文件'
+  setFile(event.target.files?.[0])
 }
+
+function setFile(file) {
+  if (!file) return
+  selectedFile.value = file
+  fileName.value = file.name
+  uploadId.value = ''
+  analysis.value = null
+  logs.value = []
+  downloadUrl.value = ''
+}
+
+function onDrop(event) {
+  isDragging.value = false
+  setFile(event.dataTransfer.files?.[0])
+}
+
+function addLog(text, state = '进行中') {
+  logs.value.unshift({
+    time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    text,
+    state,
+  })
+}
+
+async function loadVoices() {
+  voices.value = await fetch('/api/voices').then((r) => r.json())
+  selectedVoice.value = voices.value.find((v) => v.id === 'zh-CN-XiaoxiaoNeural')?.id || voices.value[0]?.id || ''
+}
+
+function voiceLabel(id) {
+  const voice = voices.value.find((v) => v.id === id)
+  if (!voice) return id
+  const gender = voice.gender === 'Female' ? '女声' : '男声'
+  const locale = voice.locale === 'zh-CN' ? '普通话' : voice.locale
+  return `${voice.id.replace('zh-CN-', '').replace('Neural', '')} · ${locale} · ${gender}`
+}
+
+function rateLabel(value) {
+  return rates.find((item) => item.value === value)?.label || value
+}
+
+async function analyzeFile() {
+  if (!selectedFile.value) {
+    addLog('请先选择一个 PPTX 文件。', '待处理')
+    return
+  }
+  isAnalyzing.value = true
+  addLog('正在上传并分析 PPT。')
+  const formData = new FormData()
+  formData.append('pptx', selectedFile.value)
+  try {
+    const data = await fetch('/api/analyze', { method: 'POST', body: formData }).then((r) => r.json())
+    uploadId.value = data.upload_id
+    analysis.value = data
+    addLog(`分析完成：共 ${data.slides} 页，备注约 ${data.chars} 字。`, '完成')
+  } catch {
+    addLog('分析失败，请检查后端是否已启动。', '失败')
+  } finally {
+    isAnalyzing.value = false
+  }
+}
+
+async function previewVoice() {
+  if (!selectedVoice.value) return
+  isPreviewing.value = true
+  addLog('正在生成试听音频。')
+  try {
+    const blob = await fetch('/api/preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        voice: selectedVoice.value,
+        rate: selectedRate.value,
+        text: '大家好，这是当前音色的试听效果。接下来我们将开始本页内容的讲解。',
+      }),
+    }).then((r) => r.blob())
+    audioUrl.value = URL.createObjectURL(blob)
+    addLog('试听音频已生成。', '完成')
+  } catch {
+    addLog('试听失败，请检查后端是否已启动。', '失败')
+  } finally {
+    isPreviewing.value = false
+  }
+}
+
+async function generateVideo() {
+  if (!uploadId.value) {
+    await analyzeFile()
+    if (!uploadId.value) return
+  }
+  isGenerating.value = true
+  downloadUrl.value = ''
+  addLog('已创建视频生成任务。')
+  const data = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      upload_id: uploadId.value,
+      voice: selectedVoice.value,
+      rate: selectedRate.value,
+      target_minutes: 40,
+    }),
+  }).then((r) => r.json())
+  jobId.value = data.job_id
+  pollJob()
+}
+
+async function pollJob() {
+  const timer = setInterval(async () => {
+    const data = await fetch(`/api/jobs/${jobId.value}`).then((r) => r.json())
+    jobStatus.value = data.status
+    if (data.status === 'running' && lastPolledStatus.value !== 'running') {
+      addLog('视频生成中，请稍候。')
+    }
+    lastPolledStatus.value = data.status
+    if (data.status === 'done') {
+      clearInterval(timer)
+      isGenerating.value = false
+      downloadUrl.value = `/api/download/${data.output}`
+      addLog('视频生成完成，可以下载。', '完成')
+    }
+    if (data.status === 'error') {
+      clearInterval(timer)
+      isGenerating.value = false
+      addLog('视频生成失败，请查看后端日志。', '失败')
+    }
+  }, 2500)
+}
+
+onMounted(loadVoices)
 </script>
 
 <template>
@@ -35,7 +177,14 @@ function onFileChange(event) {
     <section class="grid">
       <article class="card">
         <h2>上传课件</h2>
-        <label class="dropzone">
+        <label
+          class="dropzone"
+          :class="{ dragging: isDragging }"
+          @dragenter.prevent="isDragging = true"
+          @dragover.prevent="isDragging = true"
+          @dragleave.prevent="isDragging = false"
+          @drop.prevent="onDrop"
+        >
           <input type="file" accept=".pptx" @change="onFileChange" />
           <FileUp :size="22" />
           <strong>拖入 PPTX，或点击选择文件</strong>
@@ -64,19 +213,19 @@ function onFileChange(event) {
             <span>中文音色</span>
             <div class="select">
               <button class="select-trigger" @click="voiceOpen = !voiceOpen">
-                {{ selectedVoice }}
+                {{ voiceLabel(selectedVoice) }}
                 <ChevronDown :size="18" />
               </button>
               <div v-if="voiceOpen" class="select-menu">
                 <button
                   v-for="voice in voices"
-                  :key="voice"
+                  :key="voice.id"
                   class="select-option"
-                  :class="{ active: voice === selectedVoice }"
-                  @click="selectedVoice = voice; voiceOpen = false"
+                  :class="{ active: voice.id === selectedVoice }"
+                  @click="selectedVoice = voice.id; voiceOpen = false"
                 >
-                  <Check v-if="voice === selectedVoice" :size="16" />
-                  <span>{{ voice }}</span>
+                  <Check v-if="voice.id === selectedVoice" :size="16" />
+                  <span>{{ voiceLabel(voice.id) }}</span>
                 </button>
               </div>
             </div>
@@ -86,19 +235,19 @@ function onFileChange(event) {
             <span>语速</span>
             <div class="select">
               <button class="select-trigger" @click="rateOpen = !rateOpen">
-                {{ selectedRate }}
+                {{ rateLabel(selectedRate) }}
                 <ChevronDown :size="18" />
               </button>
               <div v-if="rateOpen" class="select-menu">
                 <button
                   v-for="rate in rates"
-                  :key="rate"
+                  :key="rate.value"
                   class="select-option"
-                  :class="{ active: rate === selectedRate }"
-                  @click="selectedRate = rate; rateOpen = false"
+                  :class="{ active: rate.value === selectedRate }"
+                  @click="selectedRate = rate.value; rateOpen = false"
                 >
-                  <Check v-if="rate === selectedRate" :size="16" />
-                  <span>{{ rate }}</span>
+                  <Check v-if="rate.value === selectedRate" :size="16" />
+                  <span>{{ rate.label }}</span>
                 </button>
               </div>
             </div>
@@ -106,35 +255,43 @@ function onFileChange(event) {
 
           <label>
             <span>目标时长</span>
-            <input value="40 分钟" />
+            <input value="40 分钟" readonly />
           </label>
         </div>
 
         <div class="actions">
-          <button class="primary">
-            <Sparkles :size="16" />
-            开始生成
+          <button class="primary" @click="generateVideo">
+            <LoaderCircle v-if="isGenerating" :size="16" class="spin" />
+            <Sparkles v-else :size="16" />
+            {{ isGenerating ? '生成中' : '开始生成' }}
           </button>
-          <button class="secondary">
-            <Play :size="16" />
-            试听音色
+          <button class="secondary" @click="previewVoice">
+            <LoaderCircle v-if="isPreviewing" :size="16" class="spin" />
+            <Play v-else :size="16" />
+            {{ isPreviewing ? '生成试听中' : '试听音色' }}
           </button>
         </div>
+        <audio v-if="audioUrl" class="audio" :src="audioUrl" controls autoplay />
       </article>
     </section>
 
     <section class="card log">
       <div class="section-head">
         <h2>追踪日志</h2>
-        <span>当前任务 #AVS-0241</span>
+        <span>{{ analysis ? `共 ${analysis.slides} 页 · 备注 ${analysis.chars} 字` : '等待课件分析' }}</span>
       </div>
       <div class="log-list">
+        <div v-if="!logs.length" class="empty-log">尚未开始任务。</div>
         <div v-for="item in logs" :key="item.time + item.text" class="log-item">
           <span class="log-time">{{ item.time }}</span>
           <span>{{ item.text }}</span>
           <span class="log-state" :class="{ done: item.state === '完成' }">{{ item.state }}</span>
         </div>
       </div>
+      <a v-if="downloadUrl" class="download" :href="downloadUrl">
+        <Download :size="16" />
+        下载生成视频
+      </a>
     </section>
   </main>
 </template>

@@ -109,6 +109,13 @@ button {
   color: var(--ink-soft);
   background: rgba(114, 116, 95, .06);
   text-align: center;
+  transition: .18s ease;
+}
+
+.dropzone:hover,
+.dropzone.dragging {
+  border-color: var(--accent);
+  background: rgba(162, 79, 44, .08);
 }
 
 .dropzone input {
@@ -182,6 +189,7 @@ input {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  transition: .18s ease;
 }
 
 .select-menu {
@@ -208,6 +216,7 @@ input {
   align-items: center;
   gap: 8px;
   text-align: left;
+  transition: .18s ease;
 }
 
 .select-option:last-child {
@@ -217,6 +226,12 @@ input {
 .select-option.active {
   background: rgba(162, 79, 44, .09);
   color: var(--accent-deep);
+}
+
+.select-trigger:hover,
+.select-option:hover {
+  border-color: var(--accent);
+  background: rgba(162, 79, 44, .06);
 }
 
 .actions {
@@ -232,6 +247,7 @@ input {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  transition: .18s ease;
 }
 
 .primary {
@@ -243,6 +259,20 @@ input {
   border-color: var(--line) !important;
   background: transparent;
   color: var(--ink);
+}
+
+.primary:hover {
+  background: var(--accent-deep);
+}
+
+.secondary:hover {
+  border-color: var(--accent) !important;
+  background: rgba(162, 79, 44, .06);
+}
+
+.audio {
+  width: 100%;
+  margin-top: 16px;
 }
 
 .log {
@@ -269,6 +299,11 @@ input {
   display: grid;
 }
 
+.empty-log {
+  color: var(--ink-soft);
+  padding: 8px 0 4px;
+}
+
 .log-item {
   display: grid;
   grid-template-columns: 88px 1fr auto;
@@ -293,6 +328,23 @@ input {
 
 .log-state.done {
   color: var(--accent);
+}
+
+.download {
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--accent-deep);
+  text-decoration: none;
+}
+
+.spin {
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 @media (max-width: 900px) {
