@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles, Square, X } from 'lucide-vue-next'
+import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles, Square } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
 const selectedFile = ref(null)
@@ -207,7 +207,6 @@ onMounted(loadVoices)
           <span>{{ fileName }}</span>
         </label>
         <button v-if="selectedFile" class="clear-file" @click="clearFile">
-          <X :size="15" />
           清除上传的 PPT
         </button>
         <div class="timeline">
