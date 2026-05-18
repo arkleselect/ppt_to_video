@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, ref } from 'vue'
-import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles, Square } from 'lucide-vue-next'
+import { Check, ChevronDown, CircleHelp, Download, FileUp, LoaderCircle, Play, Sparkles, Square } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
 const selectedFile = ref(null)
@@ -8,6 +8,7 @@ const fileInput = ref(null)
 const uploadId = ref('')
 const selectedVoice = ref('')
 const selectedRate = ref('-5%')
+const useTargetDuration = ref(false)
 const targetMinutes = ref(40)
 const voiceOpen = ref(false)
 const rateOpen = ref(false)
@@ -146,7 +147,7 @@ async function generateVideo() {
       upload_id: uploadId.value,
       voice: selectedVoice.value,
       rate: selectedRate.value,
-      target_minutes: Number(targetMinutes.value) || 40,
+      ...(useTargetDuration.value ? { target_minutes: Number(targetMinutes.value) || 40 } : {}),
     }),
   }).then((r) => r.json())
   jobId.value = data.job_id
@@ -278,10 +279,23 @@ onMounted(loadVoices)
           </label>
 
           <label>
-            <span>目标时长</span>
-            <div class="duration-input">
-              <input v-model="targetMinutes" type="number" min="1" step="1" />
-              <span>分钟</span>
+            <span class="duration-label">
+              自定义目标时长
+              <span class="tooltip-wrap">
+                <CircleHelp :size="15" />
+                <span class="tooltip">
+                  开启后，系统会通过页尾停顿尽量接近目标总时长；关闭时，则按 PPT 的自然配音时长生成。
+                </span>
+              </span>
+            </span>
+            <div class="duration-row">
+              <button class="toggle" :class="{ enabled: useTargetDuration }" @click="useTargetDuration = !useTargetDuration">
+                <span></span>
+              </button>
+              <div class="duration-input" :class="{ disabled: !useTargetDuration }">
+                <input v-model="targetMinutes" type="number" min="1" step="1" :disabled="!useTargetDuration" />
+                <span>分钟</span>
+              </div>
             </div>
           </label>
         </div>

@@ -99,9 +99,9 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         "--voice",
         voice,
         f"--rate={rate}",
-        "--target-minutes",
-        str(target_minutes),
     ]
+    if target_minutes is not None:
+        cmd.extend(["--target-minutes", str(target_minutes)])
     job["status"] = "running"
     append_log(job, "任务已启动。")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -139,7 +139,13 @@ def generate():
     jobs[job_id] = {"status": "queued", "logs": []}
     thread = threading.Thread(
         target=run_job,
-        args=(job_id, src, payload["voice"], payload.get("rate", "-5%"), float(payload.get("target_minutes", 40))),
+        args=(
+            job_id,
+            src,
+            payload["voice"],
+            payload.get("rate", "-5%"),
+            float(payload["target_minutes"]) if payload.get("target_minutes") is not None else None,
+        ),
         daemon=True,
     )
     thread.start()
