@@ -26,6 +26,7 @@ const audioUrl = ref('')
 const analyzeController = ref(null)
 const showServerLogs = ref(false)
 const serverLogs = ref([])
+const activeTab = ref('single')
 
 const voices = ref([])
 const rates = [
@@ -246,7 +247,22 @@ watch(selectedRate, () => {
 </script>
 
 <template>
+  <header class="top-navigation">
+    <div class="top-navigation-inner">
+      <nav class="nav-links">
+        <button class="nav-link" :class="{ active: activeTab === 'single' }" @click="activeTab = 'single'">
+          单个生成
+        </button>
+        <button class="nav-link" :class="{ active: activeTab === 'batch' }" @click="activeTab = 'batch'">
+          批量生成
+        </button>
+      </nav>
+    </div>
+  </header>
+
   <main class="page">
+
+    <template v-if="activeTab === 'single'">
     <section class="grid">
       <article class="card">
         <h2>上传课件</h2>
@@ -427,5 +443,80 @@ watch(selectedRate, () => {
         </div>
       </section>
     </section>
+    </template>
+
+    <template v-else>
+      <section class="batch-layout">
+        <article class="card batch-upload">
+          <h2>批量上传</h2>
+          <div class="dropzone batch-dropzone">
+            <FileUp :size="22" />
+            <strong>拖入多个 PPTX，或点击选择文件</strong>
+            <span>支持一次处理多份课件</span>
+          </div>
+        </article>
+
+        <article class="card batch-settings">
+          <h2>批量设置</h2>
+          <div class="form">
+            <label>
+              <span>统一音色</span>
+              <div class="select">
+                <button class="select-trigger">
+                  {{ voiceLabel(selectedVoice) }}
+                  <ChevronDown :size="18" />
+                </button>
+              </div>
+            </label>
+            <label>
+              <span>统一语速</span>
+              <div class="select">
+                <button class="select-trigger">
+                  {{ rateLabel(selectedRate) }}
+                  <ChevronDown :size="18" />
+                </button>
+              </div>
+            </label>
+            <label>
+              <span>目标时长策略</span>
+              <div class="batch-policy">默认按自然时长生成</div>
+            </label>
+          </div>
+        </article>
+
+        <article class="card batch-table">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>任务队列</h2>
+              <span>3 个文件</span>
+            </div>
+            <div class="section-tools">
+              <button class="primary">全部开始</button>
+              <button class="utility compact">全部停止</button>
+            </div>
+          </div>
+          <div class="queue-list">
+            <div class="queue-row">
+              <span>档案展平规范培训.pptx</span>
+              <span class="muted">80 页</span>
+              <span class="running">生成音频 12 / 80</span>
+              <button class="utility compact">详情</button>
+            </div>
+            <div class="queue-row">
+              <span>纸质档案扫描准备.pptx</span>
+              <span class="muted">42 页</span>
+              <span class="muted">等待中</span>
+              <button class="utility compact">详情</button>
+            </div>
+            <div class="queue-row">
+              <span>档案修复安全须知.pptx</span>
+              <span class="muted">36 页</span>
+              <span class="done">已完成</span>
+              <button class="utility compact">下载</button>
+            </div>
+          </div>
+        </article>
+      </section>
+    </template>
   </main>
 </template>
