@@ -8,6 +8,7 @@ import subprocess
 import threading
 import uuid
 from datetime import datetime
+from collections import deque
 from pathlib import Path
 
 import edge_tts
@@ -26,6 +27,7 @@ JOB_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
+server_logs: deque[dict] = deque(maxlen=300)
 
 
 def append_log(job: dict, text: str, state: str = "进行中"):
@@ -33,6 +35,14 @@ def append_log(job: dict, text: str, state: str = "进行中"):
         "time": datetime.now().strftime("%H:%M:%S"),
         "text": text,
         "state": state,
+    })
+
+
+def append_server_log(text: str, level: str = "info"):
+    server_logs.append({
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "text": text,
+        "level": level,
     })
 
 
@@ -104,6 +114,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         cmd.extend(["--target-minutes", str(target_minutes)])
     job["status"] = "running"
     append_log(job, "任务已启动。")
+    append_server_log(f"任务 {job_id} 已启动。")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     job["process"] = proc
     stdout_lines = []
@@ -120,17 +131,21 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
     job.pop("process", None)
     if job.get("status") == "stopped":
         append_log(job, "视频生成已停止。", "已停止")
+        append_server_log(f"任务 {job_id} 已停止。")
     elif returncode == 0:
         job["status"] = "done"
         job["output"] = out.name
         append_log(job, "视频生成完成。", "完成")
+        append_server_log(f"任务 {job_id} 已完成。")
     else:
         job["status"] = "error"
         if stderr:
             print(stderr, flush=True)
             first_line = stderr.strip().splitlines()[-1]
             append_log(job, first_line, "失败")
+            append_server_log(stderr.strip(), "error")
         append_log(job, "视频生成失败。", "失败")
+        append_server_log(f"任务 {job_id} 失败。", "error")
 
 
 @app.post("/api/generate")
@@ -176,6 +191,11 @@ def stop_job(job_id: str):
         job["status"] = "stopped"
         append_log(job, "收到停止请求，正在终止任务。", "已停止")
     return jsonify({"status": job["status"]})
+
+
+@app.get("/api/server-logs")
+def get_server_logs():
+    return jsonify(list(server_logs))
 
 
 @app.get("/api/download/<filename>")

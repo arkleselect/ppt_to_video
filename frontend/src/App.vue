@@ -24,6 +24,8 @@ const lastPolledStatus = ref('')
 const downloadUrl = ref('')
 const audioUrl = ref('')
 const analyzeController = ref(null)
+const showServerLogs = ref(false)
+const serverLogs = ref([])
 
 const voices = ref([])
 const rates = [
@@ -219,6 +221,11 @@ async function pollJob() {
   }, 2500)
 }
 
+async function loadServerLogs() {
+  serverLogs.value = await fetch('/api/server-logs').then((r) => r.json())
+  showServerLogs.value = true
+}
+
 onMounted(loadVoices)
 
 watch(selectedRate, () => {
@@ -228,14 +235,6 @@ watch(selectedRate, () => {
 
 <template>
   <main class="page">
-    <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark">声</div>
-        <span>Archive Voice Studio</span>
-      </div>
-      <div class="meta">Local workspace · Chinese narration</div>
-    </header>
-
     <section class="grid">
       <article class="card">
         <h2>上传课件</h2>
@@ -376,13 +375,16 @@ watch(selectedRate, () => {
     <section class="card log">
       <div class="section-head">
         <h2>追踪日志</h2>
-        <span>
-          {{
-            analysis
-              ? `共 ${analysis.slides} 页 · 备注 ${analysis.chars} 字${estimatedMinutes ? ` · 预计 ${estimatedMinutes.toFixed(1)} 分钟` : ''}`
-              : '等待课件分析'
-          }}
-        </span>
+        <div class="section-tools">
+          <span>
+            {{
+              analysis
+                ? `共 ${analysis.slides} 页 · 备注 ${analysis.chars} 字${estimatedMinutes ? ` · 预计 ${estimatedMinutes.toFixed(1)} 分钟` : ''}`
+                : '等待课件分析'
+            }}
+          </span>
+          <button class="utility compact" @click="loadServerLogs">查看后端日志</button>
+        </div>
       </div>
       <div class="log-list">
         <div v-if="!logs.length" class="empty-log">尚未开始任务。</div>
@@ -397,5 +399,21 @@ watch(selectedRate, () => {
         下载生成视频
       </a>
     </section>
+
+    <div v-if="showServerLogs" class="modal-backdrop" @click.self="showServerLogs = false">
+      <section class="modal card">
+        <div class="section-head">
+          <h2>后端日志</h2>
+          <button class="utility compact" @click="showServerLogs = false">关闭</button>
+        </div>
+        <div class="server-log-list">
+          <div v-if="!serverLogs.length" class="empty-log">暂无后端日志。</div>
+          <div v-for="item in serverLogs" :key="item.time + item.text" class="server-log-item">
+            <span>{{ item.time }}</span>
+            <pre :class="{ error: item.level === 'error' }">{{ item.text }}</pre>
+          </div>
+        </div>
+      </section>
+    </div>
   </main>
 </template>
