@@ -15,6 +15,11 @@ from xml.etree import ElementTree as ET
 import edge_tts
 from mutagen.mp3 import MP3
 
+try:
+    import fitz
+except ImportError:
+    fitz = None
+
 
 NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -33,6 +38,10 @@ def require_tool(name: str) -> str:
     if path:
         return path
     raise FileNotFoundError(f"缺少系统命令：{name}。请确认已安装，并已加入 PATH。")
+
+
+def find_tool(name: str) -> str | None:
+    return shutil.which(name)
 
 
 def natural_key(path: str) -> list[object]:
@@ -97,6 +106,24 @@ def clean_note_text(chunks: list[str]) -> str:
     return "\n".join(cleaned)
 
 
+def render_pdf_with_pymupdf(pdf_path: Path, img_dir: Path) -> list[Path]:
+    if fitz is None:
+        raise FileNotFoundError(
+            "缺少系统命令：pdftoppm，且未安装 Python 依赖 PyMuPDF。"
+            "请安装 poppler 并加入 PATH，或执行 `pip install -r backend/requirements.txt`。"
+        )
+
+    slides: list[Path] = []
+    with fitz.open(pdf_path) as pdf:
+        for idx, page in enumerate(pdf, start=1):
+            out_path = img_dir / f"slide-{idx}.png"
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pix.save(out_path)
+            slides.append(out_path)
+            print(f"[progress] 渲染幻灯片图片 {idx}/{len(pdf)}", flush=True)
+    return slides
+
+
 def export_slides(pptx_path: Path, out_dir: Path) -> list[Path]:
     pdf_dir = out_dir / "pdf"
     img_dir = out_dir / "slides"
@@ -104,12 +131,16 @@ def export_slides(pptx_path: Path, out_dir: Path) -> list[Path]:
     img_dir.mkdir(parents=True, exist_ok=True)
 
     soffice = require_tool("soffice")
-    pdftoppm = require_tool("pdftoppm")
+    pdftoppm = find_tool("pdftoppm")
     run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(pptx_path)])
     pdf_path = pdf_dir / f"{pptx_path.stem}.pdf"
     print("[progress] 已导出 PDF，开始渲染幻灯片图片", flush=True)
-    run([pdftoppm, "-png", str(pdf_path), str(img_dir / "slide")])
-    slides = sorted(img_dir.glob("slide-*.png"), key=lambda p: natural_key(p.name))
+    if pdftoppm:
+        run([pdftoppm, "-png", str(pdf_path), str(img_dir / "slide")])
+        slides = sorted(img_dir.glob("slide-*.png"), key=lambda p: natural_key(p.name))
+    else:
+        print("[progress] 未找到 pdftoppm，改用 PyMuPDF 渲染 PDF", flush=True)
+        slides = render_pdf_with_pymupdf(pdf_path, img_dir)
     print(f"[progress] 幻灯片图片渲染完成，共 {len(slides)} 页", flush=True)
     return slides
 

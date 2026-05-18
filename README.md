@@ -96,7 +96,8 @@ brew install --cask libreoffice
 
 - `ffmpeg`：负责音视频合成
 - `libreoffice`：负责将 PPTX 导出为 PDF
-- `pdftoppm`（来自 `poppler`）：负责将 PDF 渲染为图片
+- `pdftoppm`（来自 `poppler`）：优先用于将 PDF 渲染为图片
+- 若未安装 `pdftoppm`，后端会自动回退到 `PyMuPDF` 进行渲染
 
 ### 4. 启动后端
 
@@ -157,6 +158,7 @@ done
 - FFmpeg
 - LibreOffice
 - `pdftoppm`
+- `PyMuPDF`（已包含在 `backend/requirements.txt` 中，用作 PDF 渲染回退）
 
 Python 依赖示例：
 
