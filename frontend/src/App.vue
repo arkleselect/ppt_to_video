@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { Check, ChevronDown, CircleHelp, Download, FileUp, LoaderCircle, Play, Sparkles, Square } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
@@ -17,11 +17,13 @@ const isAnalyzing = ref(false)
 const isPreviewing = ref(false)
 const isGenerating = ref(false)
 const analysis = ref(null)
+const estimatedMinutes = ref(null)
 const jobId = ref('')
 const jobStatus = ref('')
 const lastPolledStatus = ref('')
 const downloadUrl = ref('')
 const audioUrl = ref('')
+const analyzeController = ref(null)
 
 const voices = ref([])
 const rates = [
@@ -51,6 +53,7 @@ function clearFile() {
   fileName.value = '还没有文件'
   uploadId.value = ''
   analysis.value = null
+  estimatedMinutes.value = null
   downloadUrl.value = ''
   logs.value = []
   if (fileInput.value) {
@@ -94,19 +97,50 @@ async function analyzeFile() {
     return
   }
   isAnalyzing.value = true
+  analyzeController.value = new AbortController()
   addLog('正在上传并分析 PPT。')
   const formData = new FormData()
   formData.append('pptx', selectedFile.value)
   try {
-    const data = await fetch('/api/analyze', { method: 'POST', body: formData }).then((r) => r.json())
+    const data = await fetch('/api/analyze', {
+      method: 'POST',
+      body: formData,
+      signal: analyzeController.value.signal,
+    }).then((r) => r.json())
     uploadId.value = data.upload_id
     analysis.value = data
     addLog(`分析完成：共 ${data.slides} 页，备注约 ${data.chars} 字。`, '完成')
-  } catch {
-    addLog('分析失败，请检查后端是否已启动。', '失败')
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      addLog('已停止分析。', '已停止')
+    } else {
+      addLog('分析失败，请检查后端是否已启动。', '失败')
+    }
   } finally {
     isAnalyzing.value = false
+    analyzeController.value = null
   }
+}
+
+function stopAnalysis() {
+  analyzeController.value?.abort()
+}
+
+async function estimateDuration() {
+  if (!analysis.value) {
+    await analyzeFile()
+    if (!analysis.value) return
+  }
+  const baseCharsPerMinute = 264
+  const multiplier = {
+    '-15%': 0.85,
+    '-5%': 0.95,
+    '+0%': 1,
+    '+10%': 1.1,
+  }[selectedRate.value] || 1
+  const charsPerMinute = baseCharsPerMinute * multiplier
+  estimatedMinutes.value = analysis.value.chars / charsPerMinute
+  addLog(`预计自然时长约 ${estimatedMinutes.value.toFixed(1)} 分钟。`, '完成')
 }
 
 async function previewVoice() {
@@ -184,6 +218,10 @@ async function pollJob() {
 }
 
 onMounted(loadVoices)
+
+watch(selectedRate, () => {
+  estimatedMinutes.value = null
+})
 </script>
 
 <template>
@@ -215,6 +253,16 @@ onMounted(loadVoices)
         <button v-if="selectedFile" class="clear-file" @click="clearFile">
           清除上传的 PPT
         </button>
+        <div class="upload-actions">
+          <button class="secondary" @click="analyzeFile">
+            <LoaderCircle v-if="isAnalyzing" :size="16" class="spin" />
+            {{ isAnalyzing ? '分析中' : '分析课件' }}
+          </button>
+          <button v-if="isAnalyzing" class="danger" @click="stopAnalysis">
+            <Square :size="15" />
+            停止分析
+          </button>
+        </div>
         <div class="timeline">
           <div class="step">
             <b>01</b>
@@ -301,6 +349,9 @@ onMounted(loadVoices)
         </div>
 
         <div class="actions">
+          <button class="secondary" @click="estimateDuration">
+            估算自然时长
+          </button>
           <button class="primary" @click="generateVideo">
             <LoaderCircle v-if="isGenerating" :size="16" class="spin" />
             <Sparkles v-else :size="16" />
@@ -323,7 +374,13 @@ onMounted(loadVoices)
     <section class="card log">
       <div class="section-head">
         <h2>追踪日志</h2>
-        <span>{{ analysis ? `共 ${analysis.slides} 页 · 备注 ${analysis.chars} 字` : '等待课件分析' }}</span>
+        <span>
+          {{
+            analysis
+              ? `共 ${analysis.slides} 页 · 备注 ${analysis.chars} 字${estimatedMinutes ? ` · 预计 ${estimatedMinutes.toFixed(1)} 分钟` : ''}`
+              : '等待课件分析'
+          }}
+        </span>
       </div>
       <div class="log-list">
         <div v-if="!logs.length" class="empty-log">尚未开始任务。</div>

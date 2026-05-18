@@ -141,6 +141,12 @@ button {
   color: var(--accent);
 }
 
+.upload-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+}
+
 .timeline {
   margin-top: 22px;
   display: grid;
