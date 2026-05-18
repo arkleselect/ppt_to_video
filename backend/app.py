@@ -21,8 +21,8 @@ BASE_DIR = Path(__file__).parent.resolve()
 STORAGE_DIR = BASE_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 JOB_DIR = STORAGE_DIR / "jobs"
-UPLOAD_DIR.mkdir(exist_ok=True)
-JOB_DIR.mkdir(exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+JOB_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
