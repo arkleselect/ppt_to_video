@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 import edge_tts
@@ -25,6 +26,14 @@ JOB_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
+
+
+def append_log(job: dict, text: str, state: str = "进行中"):
+    job.setdefault("logs", []).append({
+        "time": datetime.now().strftime("%H:%M:%S"),
+        "text": text,
+        "state": state,
+    })
 
 
 async def chinese_voices() -> list[dict]:
@@ -94,14 +103,26 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         str(target_minutes),
     ]
     job["status"] = "running"
-    proc = subprocess.run(cmd, capture_output=True, text=True)
-    job["stdout"] = proc.stdout
-    job["stderr"] = proc.stderr
-    if proc.returncode == 0:
+    append_log(job, "任务已启动。")
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    stdout_lines = []
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        stdout_lines.append(line)
+        text = line.strip()
+        if text.startswith("[progress] "):
+            append_log(job, text.replace("[progress] ", "", 1))
+    stderr = proc.stderr.read() if proc.stderr else ""
+    returncode = proc.wait()
+    job["stdout"] = "".join(stdout_lines)
+    job["stderr"] = stderr
+    if returncode == 0:
         job["status"] = "done"
         job["output"] = out.name
+        append_log(job, "视频生成完成。", "完成")
     else:
         job["status"] = "error"
+        append_log(job, "视频生成失败。", "失败")
 
 
 @app.post("/api/generate")
@@ -111,7 +132,7 @@ def generate():
     if not src.exists():
         return jsonify({"error": "上传文件不存在"}), 404
     job_id = uuid.uuid4().hex[:10]
-    jobs[job_id] = {"status": "queued"}
+    jobs[job_id] = {"status": "queued", "logs": []}
     thread = threading.Thread(
         target=run_job,
         args=(job_id, src, payload["voice"], payload.get("rate", "-5%"), float(payload.get("target_minutes", 40))),

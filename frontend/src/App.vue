@@ -143,8 +143,8 @@ async function pollJob() {
   const timer = setInterval(async () => {
     const data = await fetch(`/api/jobs/${jobId.value}`).then((r) => r.json())
     jobStatus.value = data.status
-    if (data.status === 'running' && lastPolledStatus.value !== 'running') {
-      addLog('视频生成中，请稍候。')
+    if (data.logs) {
+      logs.value = [...data.logs].reverse()
     }
     lastPolledStatus.value = data.status
     if (data.status === 'done') {

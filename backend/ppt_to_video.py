@@ -48,7 +48,8 @@ def extract_notes(pptx_path: Path) -> list[str]:
         }
 
         notes: list[str] = []
-        for sld_id in presentation.findall("p:sldIdLst/p:sldId", NS):
+        slide_ids = presentation.findall("p:sldIdLst/p:sldId", NS)
+        for idx, sld_id in enumerate(slide_ids, start=1):
             slide_target = rel_map[sld_id.attrib[f"{{{NS['r']}}}id"]]
             slide_path = f"ppt/{slide_target}".replace("ppt/slides/../", "ppt/")
             slide_name = Path(slide_path).name
@@ -71,6 +72,7 @@ def extract_notes(pptx_path: Path) -> list[str]:
                         note_text = clean_note_text(chunks)
                         break
             notes.append(note_text)
+            print(f"[progress] 提取备注 {idx}/{len(slide_ids)}", flush=True)
         return notes
 
 
@@ -96,8 +98,11 @@ def export_slides(pptx_path: Path, out_dir: Path) -> list[Path]:
 
     run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(pptx_path)])
     pdf_path = pdf_dir / f"{pptx_path.stem}.pdf"
+    print("[progress] 已导出 PDF，开始渲染幻灯片图片", flush=True)
     run(["pdftoppm", "-png", str(pdf_path), str(img_dir / "slide")])
-    return sorted(img_dir.glob("slide-*.png"), key=lambda p: natural_key(p.name))
+    slides = sorted(img_dir.glob("slide-*.png"), key=lambda p: natural_key(p.name))
+    print(f"[progress] 幻灯片图片渲染完成，共 {len(slides)} 页", flush=True)
+    return slides
 
 
 async def synthesize_one(text: str, out_path: Path, voice: str, rate: str) -> None:
@@ -113,6 +118,7 @@ async def synthesize_all(notes: list[str], out_dir: Path, voice: str, rate: str)
         path = out_dir / f"{idx:03d}.mp3"
         await synthesize_one(note, path, voice, rate)
         paths.append(path)
+        print(f"[progress] 生成音频 {idx}/{len(notes)}", flush=True)
     return paths
 
 
@@ -166,6 +172,7 @@ def build_video(slides: list[Path], audios: list[Path], output_path: Path, targe
             ])
             video_parts.append(part)
             audio_parts.append(padded_audio)
+            print(f"[progress] 合成页面视频 {idx}/{len(slides)}", flush=True)
 
         concat_file.write_text("".join(f"file '{p}'\n" for p in video_parts), encoding="utf-8")
         run([
@@ -176,6 +183,7 @@ def build_video(slides: list[Path], audios: list[Path], output_path: Path, targe
             "-c", "copy",
             str(output_path),
         ])
+        print("[progress] 已完成最终视频拼接", flush=True)
     return natural_total, natural_total + extra
 
 
