@@ -4,6 +4,7 @@ import { Check, ChevronDown, Download, FileUp, LoaderCircle, Play, Sparkles, Squ
 
 const fileName = ref('还没有文件')
 const selectedFile = ref(null)
+const fileInput = ref(null)
 const uploadId = ref('')
 const selectedVoice = ref('')
 const selectedRate = ref('-5%')
@@ -50,6 +51,9 @@ function clearFile() {
   analysis.value = null
   downloadUrl.value = ''
   logs.value = []
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
 }
 
 function onDrop(event) {
@@ -201,7 +205,7 @@ onMounted(loadVoices)
           @dragleave.prevent="isDragging = false"
           @drop.prevent="onDrop"
         >
-          <input type="file" accept=".pptx" @change="onFileChange" />
+          <input ref="fileInput" type="file" accept=".pptx" @change="onFileChange" />
           <FileUp :size="22" />
           <strong>拖入 PPTX，或点击选择文件</strong>
           <span>{{ fileName }}</span>
