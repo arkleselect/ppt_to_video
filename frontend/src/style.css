@@ -357,10 +357,11 @@ input {
 .actions button {
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
-  padding: 12px 16px;
+  padding: 9px 12px;
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  font-size: 14px;
   transition: .18s ease;
 }
 

@@ -349,9 +349,6 @@ watch(selectedRate, () => {
         </div>
 
         <div class="actions">
-          <button class="secondary" @click="estimateDuration">
-            估算自然时长
-          </button>
           <button class="primary" @click="generateVideo">
             <LoaderCircle v-if="isGenerating" :size="16" class="spin" />
             <Sparkles v-else :size="16" />
@@ -361,6 +358,9 @@ watch(selectedRate, () => {
             <LoaderCircle v-if="isPreviewing" :size="16" class="spin" />
             <Play v-else :size="16" />
             {{ isPreviewing ? '生成试听中' : '试听音色' }}
+          </button>
+          <button class="secondary" @click="estimateDuration">
+            估算自然时长
           </button>
           <button v-if="isGenerating" class="danger" @click="stopGeneration">
             <Square :size="15" />
