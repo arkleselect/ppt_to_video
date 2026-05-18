@@ -198,11 +198,13 @@ input {
   top: calc(100% + 8px);
   left: 0;
   right: 0;
+  max-height: 260px;
   border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--white);
   box-shadow: var(--shadow-card);
-  overflow: hidden;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .select-option {
@@ -211,7 +213,7 @@ input {
   border-bottom: 1px solid rgba(207, 196, 178, .7);
   background: transparent;
   color: var(--ink);
-  padding: 12px 13px;
+  padding: 10px 13px;
   display: flex;
   align-items: center;
   gap: 8px;
