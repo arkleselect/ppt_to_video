@@ -188,6 +188,22 @@ input {
   color: var(--ink);
 }
 
+.duration-input {
+  position: relative;
+}
+
+.duration-input input {
+  padding-right: 54px;
+}
+
+.duration-input span {
+  position: absolute;
+  top: 50%;
+  right: 13px;
+  transform: translateY(-50%);
+  color: var(--ink-soft);
+}
+
 .select {
   position: relative;
 }

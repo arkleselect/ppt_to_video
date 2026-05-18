@@ -8,6 +8,7 @@ const fileInput = ref(null)
 const uploadId = ref('')
 const selectedVoice = ref('')
 const selectedRate = ref('-5%')
+const targetMinutes = ref(40)
 const voiceOpen = ref(false)
 const rateOpen = ref(false)
 const isDragging = ref(false)
@@ -145,7 +146,7 @@ async function generateVideo() {
       upload_id: uploadId.value,
       voice: selectedVoice.value,
       rate: selectedRate.value,
-      target_minutes: 40,
+      target_minutes: Number(targetMinutes.value) || 40,
     }),
   }).then((r) => r.json())
   jobId.value = data.job_id
@@ -278,7 +279,10 @@ onMounted(loadVoices)
 
           <label>
             <span>目标时长</span>
-            <input value="40 分钟" readonly />
+            <div class="duration-input">
+              <input v-model="targetMinutes" type="number" min="1" step="1" />
+              <span>分钟</span>
+            </div>
           </label>
         </div>
 
