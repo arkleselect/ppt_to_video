@@ -28,6 +28,13 @@ def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+def require_tool(name: str) -> str:
+    path = shutil.which(name)
+    if path:
+        return path
+    raise FileNotFoundError(f"缺少系统命令：{name}。请确认已安装，并已加入 PATH。")
+
+
 def natural_key(path: str) -> list[object]:
     return [int(x) if x.isdigit() else x for x in re.split(r"(\d+)", path)]
 
@@ -96,10 +103,12 @@ def export_slides(pptx_path: Path, out_dir: Path) -> list[Path]:
     pdf_dir.mkdir(parents=True, exist_ok=True)
     img_dir.mkdir(parents=True, exist_ok=True)
 
-    run(["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(pptx_path)])
+    soffice = require_tool("soffice")
+    pdftoppm = require_tool("pdftoppm")
+    run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(pptx_path)])
     pdf_path = pdf_dir / f"{pptx_path.stem}.pdf"
     print("[progress] 已导出 PDF，开始渲染幻灯片图片", flush=True)
-    run(["pdftoppm", "-png", str(pdf_path), str(img_dir / "slide")])
+    run([pdftoppm, "-png", str(pdf_path), str(img_dir / "slide")])
     slides = sorted(img_dir.glob("slide-*.png"), key=lambda p: natural_key(p.name))
     print(f"[progress] 幻灯片图片渲染完成，共 {len(slides)} 页", flush=True)
     return slides

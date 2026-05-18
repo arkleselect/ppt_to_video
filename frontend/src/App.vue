@@ -212,7 +212,9 @@ async function pollJob() {
     if (data.status === 'error') {
       clearInterval(timer)
       isGenerating.value = false
-      addLog('视频生成失败，请查看后端日志。', '失败')
+      if (!data.logs?.length) {
+        addLog('视频生成失败，请查看后端日志。', '失败')
+      }
     }
   }, 2500)
 }

@@ -126,6 +126,10 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         append_log(job, "视频生成完成。", "完成")
     else:
         job["status"] = "error"
+        if stderr:
+            print(stderr, flush=True)
+            first_line = stderr.strip().splitlines()[-1]
+            append_log(job, first_line, "失败")
         append_log(job, "视频生成失败。", "失败")
 
 
