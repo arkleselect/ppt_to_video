@@ -89,8 +89,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         str(out),
         "--voice",
         voice,
-        "--rate",
-        rate,
+        f"--rate={rate}",
         "--target-minutes",
         str(target_minutes),
     ]
