@@ -427,6 +427,9 @@ input {
 
 .log-list {
   display: grid;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 6px;
 }
 
 .empty-log {
@@ -469,23 +472,18 @@ input {
   text-decoration: none;
 }
 
-.modal-backdrop {
-  position: fixed;
-  inset: 0;
-  background: rgba(29, 27, 24, .22);
-  display: grid;
-  place-items: center;
-  padding: 24px;
+.server-log-panel {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(207, 196, 178, .7);
 }
 
-.modal {
-  width: min(860px, 100%);
-  max-height: 70vh;
-  overflow: hidden;
+.inline-log-head {
+  margin-bottom: 12px;
 }
 
 .server-log-list {
-  max-height: calc(70vh - 86px);
+  max-height: 240px;
   overflow: auto;
   display: grid;
   gap: 12px;

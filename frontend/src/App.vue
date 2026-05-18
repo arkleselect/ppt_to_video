@@ -232,7 +232,7 @@ async function loadServerLogs() {
       throw new Error(`HTTP ${response.status}`)
     }
     serverLogs.value = await response.json()
-    showServerLogs.value = true
+    showServerLogs.value = !showServerLogs.value
   } catch {
     addLog('无法读取后端日志，请确认后端已重启到最新版本。', '失败')
   }
@@ -413,13 +413,10 @@ watch(selectedRate, () => {
         <Download :size="16" />
         下载生成视频
       </a>
-    </section>
-
-    <div v-if="showServerLogs" class="modal-backdrop" @click.self="showServerLogs = false">
-      <section class="modal card">
-        <div class="section-head">
+      <section v-if="showServerLogs" class="server-log-panel">
+        <div class="section-head inline-log-head">
           <h2>后端日志</h2>
-          <button class="utility compact" @click="showServerLogs = false">关闭</button>
+          <button class="utility compact" @click="showServerLogs = false">收起</button>
         </div>
         <div class="server-log-list">
           <div v-if="!serverLogs.length" class="empty-log">暂无后端日志。</div>
@@ -429,6 +426,6 @@ watch(selectedRate, () => {
           </div>
         </div>
       </section>
-    </div>
+    </section>
   </main>
 </template>
