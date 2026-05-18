@@ -222,8 +222,16 @@ async function pollJob() {
 }
 
 async function loadServerLogs() {
-  serverLogs.value = await fetch('/api/server-logs').then((r) => r.json())
-  showServerLogs.value = true
+  try {
+    const response = await fetch('/api/server-logs')
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+    serverLogs.value = await response.json()
+    showServerLogs.value = true
+  } catch {
+    addLog('无法读取后端日志，请确认后端已重启到最新版本。', '失败')
+  }
 }
 
 onMounted(loadVoices)
@@ -376,6 +384,7 @@ watch(selectedRate, () => {
       <div class="section-head">
         <h2>追踪日志</h2>
         <div class="section-tools">
+          <button class="utility compact" @click="loadServerLogs">查看日志</button>
           <span>
             {{
               analysis
@@ -383,7 +392,6 @@ watch(selectedRate, () => {
                 : '等待课件分析'
             }}
           </span>
-          <button class="utility compact" @click="loadServerLogs">查看后端日志</button>
         </div>
       </div>
       <div class="log-list">
