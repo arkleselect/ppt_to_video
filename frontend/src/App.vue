@@ -16,6 +16,7 @@ const batchFileInput = ref(null)
 const batchItems = ref([])
 const batchVoiceOpen = ref(false)
 const batchRateOpen = ref(false)
+const batchMode = ref('video')
 const batchUseTargetDuration = ref(false)
 const batchTargetMinutes = ref(40)
 const batchExpandedId = ref('')
@@ -47,7 +48,7 @@ const settings = ref({
 const settingsMessage = ref('')
 const isSavingSettings = ref(false)
 const isTestingAI = ref(false)
-const writeScriptToPpt = ref(false)
+const autoExpandDuration = ref(true)
 const scriptFile = ref(null)
 const scriptFileName = ref('还没有文件')
 const scriptFileInput = ref(null)
@@ -58,10 +59,17 @@ const scriptLogs = ref([])
 const scriptStrategy = ref('short')
 const scriptStyle = ref('培训讲师 · 稳妥清晰')
 const scriptEnrichment = ref('light')
+const batchEnrichmentOpen = ref(false)
 const enrichmentOpen = ref(false)
 const activeStrategyPopover = ref('')
 const shortNoteThreshold = ref(180)
 const scriptTargetMinutes = ref(40)
+const batchScriptStrategy = ref('short')
+const batchScriptStyle = ref('培训讲师 · 稳妥清晰')
+const batchScriptEnrichment = ref('light')
+const batchShortNoteThreshold = ref(180)
+const batchScriptTargetMinutes = ref(40)
+const batchAutoExpandDuration = ref(true)
 const isScriptAnalyzing = ref(false)
 const isScriptGenerating = ref(false)
 const scriptJobId = ref('')
@@ -167,6 +175,9 @@ function createBatchItem(file) {
     latestLog: '等待上传',
     logs: [],
     output: '',
+    pptOutput: '',
+    estimatedMinutes: null,
+    resultKind: '',
     error: '',
   }
 }
@@ -255,16 +266,17 @@ async function analyzeBatchItem(item) {
   const formData = new FormData()
   formData.append('pptx', item.file)
   try {
-    const data = await fetch('/api/analyze', {
+    const endpoint = batchMode.value === 'script' ? '/api/script/analyze' : '/api/analyze'
+    const data = await fetch(endpoint, {
       method: 'POST',
       body: formData,
     }).then(readJson)
     item.uploadId = data.upload_id
-    item.slides = data.slides
+    item.slides = data.slide_count ?? data.slides
     item.chars = data.chars
     item.status = '待生成'
     item.statusTone = 'muted'
-    pushBatchLog(item, `分析完成：共 ${data.slides} 页，备注约 ${data.chars} 字。`, '完成')
+    pushBatchLog(item, `分析完成：共 ${item.slides} 页，备注约 ${data.chars} 字。`, '完成')
     return true
   } catch (error) {
     item.error = error.message || '分析失败'
@@ -287,6 +299,8 @@ async function startBatchItem(item, options = {}) {
   }
   item.error = ''
   item.output = ''
+  item.pptOutput = ''
+  item.resultKind = batchMode.value
   const ready = await analyzeBatchItem(item)
   if (!ready) {
     await maybeStartNextBatchItem()
@@ -294,17 +308,29 @@ async function startBatchItem(item, options = {}) {
   }
   item.status = '排队中'
   item.statusTone = 'running'
-  pushBatchLog(item, '已创建视频生成任务。')
+  pushBatchLog(item, batchMode.value === 'script' ? '已创建讲稿生成任务。' : '已创建视频生成任务。')
   try {
-    const data = await fetch('/api/generate', {
+    const endpoint = batchMode.value === 'script' ? '/api/script/generate' : '/api/generate'
+    const body = batchMode.value === 'script'
+      ? {
+          upload_id: item.uploadId,
+          strategy: batchScriptStrategy.value,
+          style: batchScriptStyle.value,
+          enrichment: batchScriptEnrichment.value,
+          short_threshold: Number(batchShortNoteThreshold.value) || 180,
+          target_minutes: Number(batchScriptTargetMinutes.value) || 40,
+          auto_expand_duration: batchAutoExpandDuration.value,
+        }
+      : {
+          upload_id: item.uploadId,
+          voice: selectedVoice.value,
+          rate: selectedRate.value,
+          ...(batchUseTargetDuration.value ? { target_minutes: Number(batchTargetMinutes.value) || 40 } : {}),
+        }
+    const data = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        upload_id: item.uploadId,
-        voice: selectedVoice.value,
-        rate: selectedRate.value,
-        ...(batchUseTargetDuration.value ? { target_minutes: Number(batchTargetMinutes.value) || 40 } : {}),
-      }),
+      body: JSON.stringify(body),
     }).then(readJson)
     item.jobId = data.job_id
     item.status = '生成中'
@@ -346,12 +372,20 @@ function startBatchPolling(item) {
         stopBatchPolling(item.id)
         item.status = '已完成'
         item.statusTone = 'done'
-        item.output = data.output
-        item.latestLog = '视频生成完成，可以下载。'
+        if (item.resultKind === 'script') {
+          item.pptOutput = data.result?.ppt_output || ''
+          item.estimatedMinutes = data.result?.estimated_minutes ?? null
+          item.latestLog = data.result?.expansion_applied
+            ? '讲稿生成完成，已自动补写一轮。'
+            : '讲稿生成完成，可以下载 PPT。'
+        } else {
+          item.output = data.output
+          item.latestLog = '视频生成完成，可以下载。'
+        }
         item.logs = [
           {
             time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
-            text: '视频生成完成，可以下载。',
+            text: item.latestLog,
             state: '完成',
           },
           ...item.logs,
@@ -362,7 +396,7 @@ function startBatchPolling(item) {
         stopBatchPolling(item.id)
         item.status = '失败'
         item.statusTone = 'muted'
-        item.error = data.logs?.[data.logs.length - 1]?.text || '视频生成失败'
+        item.error = data.logs?.[data.logs.length - 1]?.text || (item.resultKind === 'script' ? '讲稿生成失败' : '视频生成失败')
         item.latestLog = item.error
         batchExpandedId.value = item.id
         await maybeStartNextBatchItem()
@@ -437,7 +471,8 @@ async function stopAllBatchItems() {
 }
 
 function batchOutputUrl(item) {
-  return item.output ? `/api/download/${item.output}` : ''
+  const filename = item.resultKind === 'script' ? item.pptOutput : item.output
+  return filename ? `/api/download/${filename}` : ''
 }
 
 function setScriptFile(file) {
@@ -523,7 +558,7 @@ async function generateScripts() {
         enrichment: scriptEnrichment.value,
         short_threshold: Number(shortNoteThreshold.value) || 180,
         target_minutes: Number(scriptTargetMinutes.value) || 40,
-        write_to_ppt: writeScriptToPpt.value,
+        auto_expand_duration: autoExpandDuration.value,
       }),
     }).then(readJson)
     scriptJobId.value = data.job_id
@@ -554,7 +589,9 @@ async function pollScriptJob() {
         if (data.result?.ppt_output) {
           scriptPptDownloadUrl.value = `/api/download/${data.result.ppt_output}`
         }
-        scriptGenerateMessage.value = `讲稿生成完成，共 ${generatedScripts.value.length} 页。`
+        const estimated = data.result?.estimated_minutes
+        const expanded = data.result?.expansion_applied
+        scriptGenerateMessage.value = `讲稿生成完成，共 ${generatedScripts.value.length} 页。${estimated ? `预计讲稿时长约 ${estimated.toFixed(1)} 分钟。` : ''}${expanded ? '已自动补写一轮。' : ''}`
       }
       if (data.status === 'error') {
         clearInterval(timer)
@@ -729,7 +766,7 @@ async function loadServerLogs() {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
-    serverLogs.value = await response.json()
+    serverLogs.value = (await response.json()).reverse()
   } catch {
     addLog('无法读取后端日志，请确认后端已重启到最新版本。', '失败')
   }
@@ -916,7 +953,7 @@ watch(activeTab, (value) => {
             </div>
           </label>
 
-          <label>
+          <div>
             <span class="duration-label">
               自定义目标时长
               <span class="tooltip-wrap">
@@ -935,7 +972,7 @@ watch(activeTab, (value) => {
                 <span>分钟</span>
               </div>
             </div>
-          </label>
+          </div>
         </div>
 
         <div class="actions">
@@ -1019,69 +1056,156 @@ watch(activeTab, (value) => {
 
         <article class="card batch-settings">
           <h2>批量设置</h2>
-          <div class="form">
-            <label>
-              <span>统一音色</span>
-              <div class="select">
-                <button class="select-trigger" @click="batchVoiceOpen = !batchVoiceOpen">
-                  {{ voiceLabel(selectedVoice) }}
-                  <ChevronDown :size="18" />
-                </button>
-                <div v-if="batchVoiceOpen" class="select-menu">
-                  <button
-                    v-for="voice in voices"
-                    :key="voice.id"
-                    class="select-option"
-                    :class="{ active: voice.id === selectedVoice }"
-                    @click="selectedVoice = voice.id; batchVoiceOpen = false"
-                  >
-                    <Check v-if="voice.id === selectedVoice" :size="16" />
-                    <span>{{ voiceLabel(voice.id) }}</span>
-                  </button>
-                </div>
-              </div>
-            </label>
-            <label>
-              <span>统一语速</span>
-              <div class="select">
-                <button class="select-trigger" @click="batchRateOpen = !batchRateOpen">
-                  {{ rateLabel(selectedRate) }}
-                  <ChevronDown :size="18" />
-                </button>
-                <div v-if="batchRateOpen" class="select-menu">
-                  <button
-                    v-for="rate in rates"
-                    :key="rate.value"
-                    class="select-option"
-                    :class="{ active: rate.value === selectedRate }"
-                    @click="selectedRate = rate.value; batchRateOpen = false"
-                  >
-                    <Check v-if="rate.value === selectedRate" :size="16" />
-                    <span>{{ rate.label }}</span>
-                  </button>
-                </div>
-              </div>
-            </label>
-            <label>
-              <span class="duration-label">
-                统一目标时长
-                <span class="tooltip-wrap">
+          <div class="batch-mode-bar">
+            <div class="batch-mode-switch">
+              <button class="strategy-pill" :class="{ active: batchMode === 'video' }" @click="batchMode = 'video'">
+                批量生成视频
+              </button>
+              <button class="strategy-pill" :class="{ active: batchMode === 'script' }" @click="batchMode = 'script'">
+                批量生成讲稿
+              </button>
+            </div>
+            <div v-if="batchMode === 'script' && batchScriptStrategy === 'duration'" class="batch-inline-toggle">
+              <span class="duration-label batch-inline-label">
+                自动补写
+                <span class="tooltip-wrap tooltip-wrap-down">
                   <CircleHelp :size="15" />
-                  <span class="tooltip">
-                    开启后，每个文件都会按同一目标总时长策略生成；关闭时，全部按自然时长生成。
-                  </span>
+                  <span class="tooltip">批量按目标时长生成时，首轮偏短会自动补写一轮。</span>
                 </span>
               </span>
-              <div class="duration-row">
-                <button class="toggle" :class="{ enabled: batchUseTargetDuration }" @click="batchUseTargetDuration = !batchUseTargetDuration">
-                  <span></span>
-                </button>
-                <div class="duration-input" :class="{ disabled: !batchUseTargetDuration }">
-                  <input v-model="batchTargetMinutes" type="number" min="1" step="1" :disabled="!batchUseTargetDuration" />
-                  <span>分钟</span>
+              <button class="toggle" :class="{ enabled: batchAutoExpandDuration }" @click="batchAutoExpandDuration = !batchAutoExpandDuration">
+                <span></span>
+              </button>
+            </div>
+          </div>
+          <div class="form">
+            <template v-if="batchMode === 'video'">
+              <label>
+                <span>统一音色</span>
+                <div class="select">
+                  <button class="select-trigger" @click="batchVoiceOpen = !batchVoiceOpen">
+                    {{ voiceLabel(selectedVoice) }}
+                    <ChevronDown :size="18" />
+                  </button>
+                  <div v-if="batchVoiceOpen" class="select-menu">
+                    <button
+                      v-for="voice in voices"
+                      :key="voice.id"
+                      class="select-option"
+                      :class="{ active: voice.id === selectedVoice }"
+                      @click="selectedVoice = voice.id; batchVoiceOpen = false"
+                    >
+                      <Check v-if="voice.id === selectedVoice" :size="16" />
+                      <span>{{ voiceLabel(voice.id) }}</span>
+                    </button>
+                  </div>
+                </div>
+              </label>
+              <label>
+                <span>统一语速</span>
+                <div class="select">
+                  <button class="select-trigger" @click="batchRateOpen = !batchRateOpen">
+                    {{ rateLabel(selectedRate) }}
+                    <ChevronDown :size="18" />
+                  </button>
+                  <div v-if="batchRateOpen" class="select-menu">
+                    <button
+                      v-for="rate in rates"
+                      :key="rate.value"
+                      class="select-option"
+                      :class="{ active: rate.value === selectedRate }"
+                      @click="selectedRate = rate.value; batchRateOpen = false"
+                    >
+                      <Check v-if="rate.value === selectedRate" :size="16" />
+                      <span>{{ rate.label }}</span>
+                    </button>
+                  </div>
+                </div>
+              </label>
+              <div>
+                <span class="duration-label">
+                  统一目标时长
+                  <span class="tooltip-wrap">
+                    <CircleHelp :size="15" />
+                    <span class="tooltip">
+                      开启后，每个文件都会按同一目标总时长策略生成；关闭时，全部按自然时长生成。
+                    </span>
+                  </span>
+                </span>
+                <div class="duration-row">
+                  <button class="toggle" :class="{ enabled: batchUseTargetDuration }" @click="batchUseTargetDuration = !batchUseTargetDuration">
+                    <span></span>
+                  </button>
+                  <div class="duration-input" :class="{ disabled: !batchUseTargetDuration }">
+                    <input v-model="batchTargetMinutes" type="number" min="1" step="1" :disabled="!batchUseTargetDuration" />
+                    <span>分钟</span>
+                  </div>
                 </div>
               </div>
-            </label>
+            </template>
+            <template v-else>
+              <label>
+                <span>生成策略</span>
+                <div class="batch-mode-switch batch-mode-inline">
+                  <button class="strategy-pill" :class="{ active: batchScriptStrategy === 'short' }" @click="batchScriptStrategy = 'short'">
+                    只补短备注
+                  </button>
+                  <button class="strategy-pill" :class="{ active: batchScriptStrategy === 'rewrite' }" @click="batchScriptStrategy = 'rewrite'">
+                    全部重写
+                  </button>
+                  <button class="strategy-pill" :class="{ active: batchScriptStrategy === 'duration' }" @click="batchScriptStrategy = 'duration'">
+                    按目标时长生成
+                  </button>
+                </div>
+              </label>
+              <div class="batch-script-row" :class="{ single: !['short', 'duration'].includes(batchScriptStrategy) }">
+                <label>
+                  <span>讲解风格</span>
+                  <input v-model="batchScriptStyle" />
+                </label>
+                <div v-if="batchScriptStrategy === 'short'">
+                  <span>短备注阈值</span>
+                  <div class="duration-input">
+                    <input v-model="batchShortNoteThreshold" type="number" min="1" step="10" />
+                    <span>字</span>
+                  </div>
+                </div>
+                <div v-if="batchScriptStrategy === 'duration'">
+                  <span>统一目标讲稿时长</span>
+                  <div class="duration-input">
+                    <input v-model="batchScriptTargetMinutes" type="number" min="1" step="1" />
+                    <span>分钟</span>
+                  </div>
+                </div>
+              </div>
+              <label>
+                <span>补充程度</span>
+                <div class="select">
+                  <button class="select-trigger" @click="batchEnrichmentOpen = !batchEnrichmentOpen">
+                    <span class="select-summary">
+                      <strong>{{ enrichmentOption(batchScriptEnrichment).label }}</strong>
+                      <span>{{ enrichmentOption(batchScriptEnrichment).hint }}</span>
+                    </span>
+                    <ChevronDown :size="18" />
+                  </button>
+                  <div v-if="batchEnrichmentOpen" class="select-menu">
+                    <button
+                      v-for="option in enrichmentOptions"
+                      :key="option.value"
+                      class="select-option select-option-detail"
+                      :class="{ active: batchScriptEnrichment === option.value }"
+                      @click="batchScriptEnrichment = option.value; batchEnrichmentOpen = false"
+                    >
+                      <Check v-if="batchScriptEnrichment === option.value" :size="16" />
+                      <span>
+                        <strong>{{ option.label }}</strong>
+                        <small>{{ option.hint }}</small>
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </label>
+            </template>
           </div>
         </article>
 
@@ -1105,8 +1229,8 @@ watch(activeTab, (value) => {
                 <span class="muted">{{ item.slides ? `${item.slides} 页` : '待分析' }}</span>
                 <span :class="batchStatusClass(item)">{{ item.status }}</span>
                 <div class="queue-actions">
-                  <a v-if="item.output" class="utility compact" :href="batchOutputUrl(item)">
-                    下载
+                  <a v-if="item.output || item.pptOutput" class="utility compact" :href="batchOutputUrl(item)">
+                    {{ item.resultKind === 'script' ? '下载 PPT' : '下载视频' }}
                   </a>
                   <button v-else-if="item.statusTone === 'running'" class="danger compact" @click="stopBatchItem(item)">停止</button>
                   <button v-else class="utility compact" @click="startBatchItem(item)">开始</button>
@@ -1118,6 +1242,7 @@ watch(activeTab, (value) => {
                 <div class="batch-detail-meta">
                   <span>备注字数：{{ item.chars ?? '待分析' }}</span>
                   <span>任务 ID：{{ item.jobId || '尚未创建' }}</span>
+                  <span v-if="item.resultKind === 'script' && item.estimatedMinutes">预计讲稿时长：{{ item.estimatedMinutes.toFixed(1) }} 分钟</span>
                 </div>
                 <div class="batch-log-list">
                   <div v-if="!item.logs.length" class="empty-log">还没有日志。</div>
@@ -1245,14 +1370,15 @@ watch(activeTab, (value) => {
               </div>
             </label>
           </div>
-          <label class="writeback-option">
-            <button class="toggle" :class="{ enabled: writeScriptToPpt }" @click="writeScriptToPpt = !writeScriptToPpt">
+          <div class="writeback-option">
+            <button class="toggle" :class="{ enabled: autoExpandDuration }" @click="autoExpandDuration = !autoExpandDuration">
               <span></span>
             </button>
             <div>
-              <strong>生成后写入新的 PPT 副本</strong>
+              <strong>时长不足自动补写</strong>
+              <p style="font-size: 14px; color: var(--ink-soft);">首轮讲稿偏短时会在原稿基础上自动补写一轮。</p>
             </div>
-          </label>
+          </div>
           <div class="actions">
             <button class="primary" @click="generateScripts">
               <LoaderCircle v-if="isScriptGenerating" :size="16" class="spin" />

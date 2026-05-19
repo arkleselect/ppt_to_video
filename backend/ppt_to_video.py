@@ -38,6 +38,22 @@ def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
 
 
+def ffmpeg_subtitles_filter(path: Path) -> str:
+    # `subtitles` filter treats `:` as an option separator, so Windows drive
+    # letters like `C:/...` must be escaped before being passed to ffmpeg.
+    normalized = str(path.resolve()).replace("\\", "/")
+    escaped = (
+        normalized
+        .replace("\\", r"\\")
+        .replace(":", r"\:")
+        .replace("'", r"\'")
+        .replace(",", r"\,")
+        .replace("[", r"\[")
+        .replace("]", r"\]")
+    )
+    return f"subtitles=filename='{escaped}'"
+
+
 def require_tool(name: str) -> str:
     path = shutil.which(name)
     if path:
@@ -396,7 +412,7 @@ def build_video(
         run([
             "ffmpeg", "-loglevel", "error", "-y",
             "-i", str(merged_video),
-            "-vf", f"subtitles={subtitle_file.as_posix()}",
+            "-vf", ffmpeg_subtitles_filter(subtitle_file),
             "-c:v", "libx264",
             "-preset", "ultrafast",
             "-c:a", "copy",

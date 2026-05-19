@@ -176,6 +176,76 @@ def script_prompt(
     ]
 
 
+def script_expand_prompt(
+    style: str,
+    enrichment: str,
+    slide_no: int,
+    slide_text: str,
+    note: str,
+    current_script: str,
+    extra_chars: int,
+) -> list[dict]:
+    enrichment_desc = {
+        "strict": "严格基于 PPT 页面文字和原备注，只做整理、润色和必要衔接，不增加背景信息。",
+        "light": "只基于 PPT 内容，允许少量背景解释和教学化表达，但不得引入无法从页面推断的事实。",
+        "teaching": "在事实边界内做教学化展开，补充原因、注意点、操作含义和听众容易理解的解释。",
+        "transition": "强化页内和上下页之间的过渡串联，让讲解更连贯，但不得编造具体事实。",
+    }.get(enrichment, "只基于 PPT 内容，允许少量背景解释。")
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是严谨的中文培训讲师，负责在现有讲稿基础上做增量扩写。"
+                "保持原有结构、事实边界和讲师口吻，不要整页重写。"
+                "只输出扩写后的完整讲解词正文，不要输出说明。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"页面序号：第 {slide_no} 页\n"
+                f"讲解风格：{style}\n"
+                f"补充程度：{enrichment_desc}\n"
+                f"目标：在当前讲稿基础上额外增加约 {extra_chars} 个中文字符。\n\n"
+                f"【PPT 页面文字】\n{slide_text or '（本页未提取到页面文字）'}\n\n"
+                f"【原备注】\n{note or '（本页暂无原备注）'}\n\n"
+                f"【当前讲稿】\n{current_script or '（当前讲稿为空）'}\n\n"
+                "请保留现有结构和事实边界，优先补充原因、解释、注意事项和过渡语，避免空泛重复。"
+            ),
+        },
+    ]
+
+
+def text_char_count(text: str) -> int:
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def estimate_minutes_from_scripts(scripts: list[str], chars_per_minute: int = 264) -> float:
+    total_chars = sum(text_char_count(script) for script in scripts)
+    return total_chars / chars_per_minute if chars_per_minute else 0.0
+
+
+def should_expand_duration(target_minutes: float, estimated_minutes: float) -> bool:
+    if not target_minutes:
+        return False
+    if estimated_minutes >= target_minutes * 0.9:
+        return False
+    return (target_minutes - estimated_minutes) >= 3
+
+
+def pick_expandable_indices(scripts: list[str], slide_texts: list[str], limit: int | None = None) -> list[int]:
+    scored = []
+    for idx, (script, slide_text) in enumerate(zip(scripts, slide_texts)):
+        score = text_char_count(slide_text) - text_char_count(script)
+        if score > 40:
+            scored.append((score, idx))
+    scored.sort(reverse=True)
+    indices = [idx for _, idx in scored]
+    if limit is not None:
+        return indices[:limit]
+    return indices
+
+
 def append_log(job: dict, text: str, state: str = "进行中"):
     job.setdefault("logs", []).append({
         "time": datetime.now().strftime("%H:%M:%S"),
@@ -197,7 +267,8 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
     strategy = payload.get("strategy", "short")
     style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
     enrichment = payload.get("enrichment", "light")
-    write_to_ppt = bool(payload.get("write_to_ppt"))
+    write_to_ppt = True
+    auto_expand_duration = bool(payload.get("auto_expand_duration"))
     short_threshold = int(payload.get("short_threshold") or 180)
     target_minutes = float(payload.get("target_minutes") or 40)
     slide_texts = extract_slide_texts(src)
@@ -219,6 +290,36 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
         scripts.append(script)
         append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
 
+    expansion_applied = False
+    estimated_minutes = estimate_minutes_from_scripts(scripts)
+    if strategy == "duration" and auto_expand_duration and should_expand_duration(target_minutes, estimated_minutes):
+        append_server_log(
+            f"首轮讲稿预计约 {estimated_minutes:.1f} 分钟，低于目标 {target_minutes:.1f} 分钟，开始增量补写。"
+        )
+        missing_chars = max(0, int((target_minutes - estimated_minutes) * 264))
+        expandable_indices = pick_expandable_indices(scripts, slide_texts, limit=max(1, len(scripts) // 2))
+        if expandable_indices and missing_chars > 0:
+            extra_per_page = max(80, missing_chars // len(expandable_indices))
+            for turn, idx in enumerate(expandable_indices, start=1):
+                note = notes[idx] if idx < len(notes) else ""
+                expanded = ai_chat(
+                    settings,
+                    script_expand_prompt(
+                        style,
+                        enrichment,
+                        idx + 1,
+                        slide_texts[idx],
+                        note,
+                        scripts[idx],
+                        extra_per_page,
+                    ),
+                )
+                scripts[idx] = expanded
+                append_server_log(f"已补写第 {turn}/{len(expandable_indices)} 个扩写页面（第 {idx + 1} 页）。")
+            estimated_minutes = estimate_minutes_from_scripts(scripts)
+            expansion_applied = True
+            append_server_log(f"补写后预计讲稿时长约 {estimated_minutes:.1f} 分钟。")
+
     output_name = None
     write_result = None
     if write_to_ppt:
@@ -234,6 +335,8 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
         ],
         "ppt_output": output_name,
         "write_result": write_result,
+        "estimated_minutes": estimated_minutes,
+        "expansion_applied": expansion_applied,
     }
 
 
