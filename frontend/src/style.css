@@ -41,6 +41,22 @@ button {
   cursor: pointer;
 }
 
+.primary,
+.secondary,
+.danger,
+.utility {
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.4;
+  transition: .18s ease;
+}
+
 .page {
   width: min(1200px, calc(100% - 48px));
   margin: 0 auto;
@@ -148,7 +164,7 @@ button {
   color: #b97467;
   display: inline-flex;
   align-items: center;
-  padding: 9px 12px;
+  padding: 8px 12px;
   font-size: 14px;
 }
 
@@ -159,15 +175,8 @@ button {
 
 .utility {
   border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
   background: rgba(255, 253, 249, .78);
   color: var(--ink);
-  padding: 9px 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  transition: .18s ease;
 }
 
 .utility:hover {
@@ -230,6 +239,11 @@ input {
   background: var(--white);
   padding: 12px 13px;
   color: var(--ink);
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 .duration-input {
@@ -393,14 +407,6 @@ input {
 }
 
 .actions button {
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  padding: 9px 12px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  transition: .18s ease;
 }
 
 .primary {
@@ -579,7 +585,7 @@ input {
   border-radius: var(--radius-sm);
   background: rgba(255, 253, 249, .78);
   color: var(--ink);
-  padding: 9px 12px;
+  padding: 8px 12px;
   font-size: 14px;
   transition: .18s ease;
 }
@@ -639,6 +645,40 @@ input {
   margin: 8px 0 0;
   color: var(--ink-soft);
   line-height: 1.8;
+}
+
+.writeback-option {
+  margin-top: 16px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  background: rgba(255, 253, 249, .58);
+}
+
+.writeback-option strong {
+  display: block;
+  font-weight: 500;
+}
+
+.writeback-option p {
+  margin: 6px 0 0;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.inline-download {
+  margin-top: 0;
+}
+
+.inline-style-input {
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.inline-style-input:focus {
+  border-color: transparent;
 }
 
 .settings-layout {

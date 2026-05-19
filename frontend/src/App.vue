@@ -26,7 +26,7 @@ const audioUrl = ref('')
 const analyzeController = ref(null)
 const showServerLogs = ref(false)
 const serverLogs = ref([])
-const activeTab = ref('single')
+const activeTab = ref(localStorage.getItem('activeTab') || 'single')
 const settings = ref({
   ai_base_url: '',
   ai_api_key: '',
@@ -37,6 +37,19 @@ const settings = ref({
 const settingsMessage = ref('')
 const isSavingSettings = ref(false)
 const isTestingAI = ref(false)
+const writeScriptToPpt = ref(false)
+const scriptFile = ref(null)
+const scriptFileName = ref('还没有文件')
+const scriptFileInput = ref(null)
+const scriptUploadId = ref('')
+const scriptSlides = ref([])
+const generatedScripts = ref([])
+const scriptStrategy = ref('short')
+const scriptStyle = ref('培训讲师 · 稳妥清晰')
+const isScriptAnalyzing = ref(false)
+const isScriptGenerating = ref(false)
+const scriptMessage = ref('')
+const scriptPptDownloadUrl = ref('')
 
 const voices = ref([])
 const rates = [
@@ -89,6 +102,77 @@ function addLog(text, state = '进行中') {
 
 function clearLogs() {
   logs.value = []
+}
+
+function setScriptFile(file) {
+  if (!file) return
+  scriptFile.value = file
+  scriptFileName.value = file.name
+  scriptUploadId.value = ''
+  scriptSlides.value = []
+  generatedScripts.value = []
+  scriptPptDownloadUrl.value = ''
+  scriptMessage.value = ''
+}
+
+function onScriptFileChange(event) {
+  setScriptFile(event.target.files?.[0])
+}
+
+async function analyzeScriptPpt() {
+  if (!scriptFile.value) {
+    scriptMessage.value = '请先上传 PPTX。'
+    return
+  }
+  isScriptAnalyzing.value = true
+  scriptMessage.value = '正在分析 PPT 页面内容与原备注。'
+  const formData = new FormData()
+  formData.append('pptx', scriptFile.value)
+  try {
+    const data = await fetch('/api/script/analyze', { method: 'POST', body: formData }).then((r) => r.json())
+    scriptUploadId.value = data.upload_id
+    scriptSlides.value = data.slides
+    scriptMessage.value = `分析完成：共 ${data.slide_count} 页。`
+  } catch {
+    scriptMessage.value = '分析失败，请确认后端已启动。'
+  } finally {
+    isScriptAnalyzing.value = false
+  }
+}
+
+async function generateScripts() {
+  if (!scriptUploadId.value) {
+    await analyzeScriptPpt()
+    if (!scriptUploadId.value) return
+  }
+  isScriptGenerating.value = true
+  scriptMessage.value = '正在调用 AI 生成讲稿，请稍候。'
+  scriptPptDownloadUrl.value = ''
+  try {
+    const data = await fetch('/api/script/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upload_id: scriptUploadId.value,
+        strategy: scriptStrategy.value,
+        style: scriptStyle.value,
+        write_to_ppt: writeScriptToPpt.value,
+      }),
+    }).then(async (r) => {
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.error || body.message || '生成失败')
+      return body
+    })
+    generatedScripts.value = data.scripts
+    if (data.ppt_output) {
+      scriptPptDownloadUrl.value = `/api/download/${data.ppt_output}`
+    }
+    scriptMessage.value = `讲稿生成完成，共 ${data.scripts.length} 页。`
+  } catch (error) {
+    scriptMessage.value = error.message || '讲稿生成失败，请检查 AI 设置。'
+  } finally {
+    isScriptGenerating.value = false
+  }
 }
 
 async function loadVoices() {
@@ -257,6 +341,7 @@ async function loadSettings() {
       ...data,
       ai_api_key: '',
     }
+    scriptStyle.value = data.default_script_style || scriptStyle.value
   } catch {
     settingsMessage.value = '读取设置失败，请确认后端已启动。'
   }
@@ -305,6 +390,10 @@ onMounted(() => {
 
 watch(selectedRate, () => {
   estimatedMinutes.value = null
+})
+
+watch(activeTab, (value) => {
+  localStorage.setItem('activeTab', value)
 })
 </script>
 
@@ -558,7 +647,7 @@ watch(selectedRate, () => {
             </div>
             <div class="section-tools">
               <button class="primary">全部开始</button>
-              <button class="utility compact">全部停止</button>
+              <button class="utility">全部停止</button>
             </div>
           </div>
           <div class="queue-list">
@@ -589,23 +678,30 @@ watch(selectedRate, () => {
       <section class="script-layout">
         <article class="card script-upload">
           <h2>上传课件</h2>
-          <div class="dropzone batch-dropzone">
+          <label class="dropzone batch-dropzone">
+            <input ref="scriptFileInput" type="file" accept=".pptx" @change="onScriptFileChange" />
             <FileUp :size="22" />
             <strong>上传需要生成讲稿的 PPTX</strong>
-            <span>系统将读取每页标题、正文与原备注，生成更完整的中文讲解词</span>
-          </div>
+            <span>{{ scriptFileName }}</span>
+          </label>
           <div class="script-strategy-actions">
-            <button class="strategy-pill active">
+            <button class="strategy-pill" :class="{ active: scriptStrategy === 'short' }" @click="scriptStrategy = 'short'">
               只补短备注
               <span>备注过短的页面才扩写，适合已有基础讲稿的 PPT。</span>
             </button>
-            <button class="strategy-pill">
+            <button class="strategy-pill" :class="{ active: scriptStrategy === 'rewrite' }" @click="scriptStrategy = 'rewrite'">
               全部重写
               <span>按统一讲师风格重写每页讲解词。</span>
             </button>
-            <button class="strategy-pill">
+            <button class="strategy-pill" :class="{ active: scriptStrategy === 'duration' }" @click="scriptStrategy = 'duration'">
               按目标时长生成
               <span>根据期望总时长分配每页字数，比硬加停顿更自然。</span>
+            </button>
+          </div>
+          <div class="upload-actions">
+            <button class="utility" @click="analyzeScriptPpt">
+              <LoaderCircle v-if="isScriptAnalyzing" :size="16" class="spin" />
+              {{ isScriptAnalyzing ? '分析中' : '分析课件' }}
             </button>
           </div>
         </article>
@@ -617,8 +713,7 @@ watch(selectedRate, () => {
               <span>风格</span>
               <div class="select">
                 <button class="select-trigger">
-                  培训讲师 · 稳妥清晰
-                  <ChevronDown :size="18" />
+                  <input v-model="scriptStyle" class="inline-style-input" />
                 </button>
               </div>
             </label>
@@ -627,10 +722,26 @@ watch(selectedRate, () => {
               <div class="batch-policy">只基于 PPT 内容，允许少量背景解释</div>
             </label>
           </div>
+          <label class="writeback-option">
+            <button class="toggle" :class="{ enabled: writeScriptToPpt }" @click="writeScriptToPpt = !writeScriptToPpt">
+              <span></span>
+            </button>
+            <div>
+              <strong>生成后写入新的 PPT 副本</strong>
+            </div>
+          </label>
           <div class="actions">
-            <button class="primary">生成讲稿</button>
+            <button class="primary" @click="generateScripts">
+              <LoaderCircle v-if="isScriptGenerating" :size="16" class="spin" />
+              {{ isScriptGenerating ? '生成中' : '生成讲稿' }}
+            </button>
             <button class="secondary">预估讲稿时长</button>
+            <a v-if="scriptPptDownloadUrl" class="download inline-download" :href="scriptPptDownloadUrl">
+              <Download :size="16" />
+              下载 PPT
+            </a>
           </div>
+          <p v-if="scriptMessage" class="settings-message">{{ scriptMessage }}</p>
         </article>
 
         <article class="card script-preview">
@@ -645,17 +756,13 @@ watch(selectedRate, () => {
             </div>
           </div>
           <div class="script-pages">
-            <div class="script-page">
-              <div>
-                <strong>第 1 页 · 培训导入</strong>
-                <p>大家好，欢迎参加本次档案数字化管理师的专业培训。今天我们将围绕折皱档案展平处理规范展开说明……</p>
-              </div>
-              <button class="utility compact">编辑</button>
+            <div v-if="!generatedScripts.length" class="empty-log">
+              {{ scriptSlides.length ? '已分析课件，等待生成讲稿。' : '上传并分析 PPT 后，这里会显示逐页讲稿。' }}
             </div>
-            <div class="script-page">
+            <div v-for="item in generatedScripts" :key="item.index" class="script-page">
               <div>
-                <strong>第 2 页 · 为什么要展平</strong>
-                <p>首先我们来看档案展平的必要性。展平不仅影响扫描图像质量，也关系到档案实体的长期保护……</p>
+                <strong>第 {{ item.index }} 页 · {{ item.title }}</strong>
+                <p>{{ item.script }}</p>
               </div>
               <button class="utility compact">编辑</button>
             </div>
@@ -709,8 +816,9 @@ watch(selectedRate, () => {
         <article class="card settings-card">
           <h2>说明</h2>
           <div class="settings-note">
-            <p>API Key 会保存在本机 <code>backend/storage/settings.json</code>，该目录已被 .gitignore 忽略，不会提交到 GitHub。</p>
-            <p>Base URL 建议填写 OpenAI 兼容接口根路径，例如 <code>https://api.openai.com/v1</code>。</p>
+            <p>API Key 会保存在本机 <code>backend/storage/settings.json</code></p>
+            <p>Base URL 建议填写 OpenAI 兼容接口根路径</p>
+            <p>例如 <code>https://api.openai.com/v1</code>。</p>
             <p>讲稿生成页会读取这里的配置；没有配置时，不应发起 AI 生成。</p>
           </div>
         </article>

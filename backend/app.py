@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -19,7 +20,7 @@ import edge_tts
 from flask import Flask, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
-from ppt_to_video import estimate_chars, extract_notes
+from ppt_to_video import estimate_chars, extract_notes, extract_slide_texts, write_notes_copy
 
 
 BASE_DIR = Path(__file__).parent.resolve()
@@ -70,6 +71,61 @@ def public_settings(settings: dict) -> dict:
         "default_script_style": settings.get("default_script_style", ""),
         "has_api_key": bool(settings.get("ai_api_key")),
     }
+
+
+def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> str:
+    base_url = settings.get("ai_base_url", "").strip().rstrip("/")
+    api_key = settings.get("ai_api_key", "").strip()
+    model = settings.get("ai_model", "").strip()
+    if not base_url or not api_key or not model:
+        raise ValueError("请先在设置页填写 Base URL、API Key 和 Model。")
+
+    body = json.dumps({
+        "model": model,
+        "messages": messages,
+        "temperature": temperature,
+    }).encode("utf-8")
+    req = url_request.Request(
+        f"{base_url}/chat/completions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with url_request.urlopen(req, timeout=120) as resp:
+        payload = json.loads(resp.read().decode("utf-8"))
+    return payload["choices"][0]["message"]["content"].strip()
+
+
+def script_prompt(strategy: str, style: str, slide_no: int, slide_text: str, note: str) -> list[dict]:
+    strategy_desc = {
+        "short": "只在原备注过短时扩写；如果原备注已经完整，可以在保留其结构的基础上润色。",
+        "rewrite": "重写本页完整讲解词，保持培训讲师口吻。",
+        "duration": "生成更充分的讲解词，适合拉长整体视频时长，但不要空泛重复。",
+    }.get(strategy, "生成清晰、自然的中文讲解词。")
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是严谨的中文培训讲师，负责根据 PPT 页面内容生成可直接朗读的演讲者备注。"
+                "只输出讲解词正文，不要输出标题、Markdown、项目符号或解释。"
+                "不得编造与页面无关的事实；可以做少量衔接、解释和教学化表达。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"页面序号：第 {slide_no} 页\n"
+                f"生成策略：{strategy_desc}\n"
+                f"讲解风格：{style}\n\n"
+                f"【PPT 页面文字】\n{slide_text or '（本页未提取到页面文字）'}\n\n"
+                f"【原备注】\n{note or '（本页暂无原备注）'}\n\n"
+                "请生成一段自然、稳妥、适合中文配音朗读的本页讲解词。"
+            ),
+        },
+    ]
 
 
 def append_log(job: dict, text: str, state: str = "进行中"):
@@ -126,6 +182,76 @@ def analyze():
         "slides": len(notes),
         "chars": estimate_chars(notes),
         "empty_notes": sum(1 for n in notes if not n.strip()),
+    })
+
+
+@app.post("/api/script/analyze")
+def script_analyze():
+    file = request.files.get("pptx")
+    if not file or not file.filename.lower().endswith(".pptx"):
+        return jsonify({"error": "请上传 .pptx 文件"}), 400
+    safe_name = secure_filename(file.filename) or f"upload-{uuid.uuid4().hex}.pptx"
+    path = UPLOAD_DIR / f"{uuid.uuid4().hex}-{safe_name}"
+    file.save(path)
+    slide_texts = extract_slide_texts(path)
+    notes = extract_notes(path)
+    slides = []
+    for idx, text in enumerate(slide_texts, start=1):
+        note = notes[idx - 1] if idx - 1 < len(notes) else ""
+        title = next((line.strip() for line in text.splitlines() if line.strip()), f"第 {idx} 页")
+        slides.append({
+            "index": idx,
+            "title": title,
+            "text": text,
+            "note": note,
+            "note_chars": len(re.sub(r"\s+", "", note)),
+        })
+    return jsonify({
+        "upload_id": path.name,
+        "slides": slides,
+        "slide_count": len(slides),
+        "chars": estimate_chars(notes),
+    })
+
+
+@app.post("/api/script/generate")
+def script_generate():
+    payload = request.get_json(force=True)
+    src = UPLOAD_DIR / payload["upload_id"]
+    if not src.exists():
+        return jsonify({"error": "上传文件不存在"}), 404
+
+    settings = load_settings()
+    strategy = payload.get("strategy", "short")
+    style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
+    write_to_ppt = bool(payload.get("write_to_ppt"))
+    slide_texts = extract_slide_texts(src)
+    notes = extract_notes(src)
+    scripts = []
+    for idx, slide_text in enumerate(slide_texts, start=1):
+        note = notes[idx - 1] if idx - 1 < len(notes) else ""
+        if strategy == "short" and len(re.sub(r"\s+", "", note)) >= 180:
+            script = note
+        else:
+            script = ai_chat(settings, script_prompt(strategy, style, idx, slide_text, note))
+        scripts.append(script)
+        append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
+
+    output_name = None
+    write_result = None
+    if write_to_ppt:
+        output_path = JOB_DIR / f"{src.stem}_已生成讲稿.pptx"
+        write_result = write_notes_copy(src, scripts, output_path)
+        output_name = output_path.name
+        append_server_log(f"已生成更新备注后的 PPT：{output_name}")
+
+    return jsonify({
+        "scripts": [
+            {"index": idx, "title": (slide_texts[idx - 1].splitlines() or [f'第 {idx} 页'])[0], "script": script}
+            for idx, script in enumerate(scripts, start=1)
+        ],
+        "ppt_output": output_name,
+        "write_result": write_result,
     })
 
 
@@ -264,22 +390,27 @@ def update_settings():
 @app.post("/api/settings/test-ai")
 def test_ai_settings():
     payload = request.get_json(silent=True) or {}
-    settings = {**load_settings(), **payload}
+    stored = load_settings()
+    settings = {**stored, **payload}
+    if not payload.get("ai_api_key"):
+        settings["ai_api_key"] = stored.get("ai_api_key", "")
     base_url = settings.get("ai_base_url", "").strip().rstrip("/")
     api_key = settings.get("ai_api_key", "").strip()
     model = settings.get("ai_model", "").strip()
     if not base_url or not api_key or not model:
         return jsonify({"ok": False, "message": "请先填写 Base URL、API Key 和 Model。"}), 400
 
-    req = url_request.Request(
-        f"{base_url}/models",
-        headers={"Authorization": f"Bearer {api_key}"},
-        method="GET",
-    )
     try:
-        with url_request.urlopen(req, timeout=12) as resp:
-            append_server_log("AI 连接测试成功。")
-            return jsonify({"ok": True, "message": f"连接成功，服务返回 HTTP {resp.status}。"})
+        message = ai_chat(
+            settings,
+            [
+                {"role": "system", "content": "你是连接测试助手。"},
+                {"role": "user", "content": "请只回复 OK。"},
+            ],
+            temperature=0,
+        )
+        append_server_log("AI 连接测试成功。")
+        return jsonify({"ok": True, "message": f"连接成功：{message[:40]}"})
     except url_error.HTTPError as exc:
         append_server_log(f"AI 连接测试失败：HTTP {exc.code}", "error")
         return jsonify({"ok": False, "message": f"连接失败：HTTP {exc.code}。"}), 400

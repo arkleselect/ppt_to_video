@@ -28,6 +28,10 @@ NS = {
     "rel": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
+ET.register_namespace("a", NS["a"])
+ET.register_namespace("p", NS["p"])
+ET.register_namespace("r", NS["r"])
+
 
 def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
@@ -90,6 +94,108 @@ def extract_notes(pptx_path: Path) -> list[str]:
             notes.append(note_text)
             print(f"[progress] 提取备注 {idx}/{len(slide_ids)}", flush=True)
         return notes
+
+
+def slide_paths_in_order(zf: zipfile.ZipFile) -> list[str]:
+    presentation = read_xml(zf, "ppt/presentation.xml")
+    pres_rels = read_xml(zf, "ppt/_rels/presentation.xml.rels")
+    rel_map = {
+        rel.attrib["Id"]: rel.attrib["Target"]
+        for rel in pres_rels.findall("rel:Relationship", NS)
+    }
+    paths: list[str] = []
+    for sld_id in presentation.findall("p:sldIdLst/p:sldId", NS):
+        slide_target = rel_map[sld_id.attrib[f"{{{NS['r']}}}id"]]
+        paths.append(f"ppt/{slide_target}".replace("ppt/slides/../", "ppt/"))
+    return paths
+
+
+def extract_slide_texts(pptx_path: Path) -> list[str]:
+    with zipfile.ZipFile(pptx_path) as zf:
+        texts: list[str] = []
+        for slide_path in slide_paths_in_order(zf):
+            root = read_xml(zf, slide_path)
+            chunks = [
+                t.text.strip()
+                for t in root.findall(".//a:t", NS)
+                if t.text and t.text.strip()
+            ]
+            texts.append("\n".join(chunks))
+        return texts
+
+
+def find_notes_paths(zf: zipfile.ZipFile) -> list[str | None]:
+    names = set(zf.namelist())
+    paths: list[str | None] = []
+    for slide_path in slide_paths_in_order(zf):
+        slide_name = Path(slide_path).name
+        slide_rels_path = f"ppt/slides/_rels/{slide_name}.rels"
+        note_path = None
+        if slide_rels_path in names:
+            slide_rels = read_xml(zf, slide_rels_path)
+            for rel in slide_rels.findall("rel:Relationship", NS):
+                if rel.attrib.get("Type", "").endswith("/notesSlide"):
+                    target = rel.attrib["Target"]
+                    note_path = f"ppt/slides/{target}".replace("ppt/slides/../", "ppt/")
+                    break
+        paths.append(note_path)
+    return paths
+
+
+def set_text_body(tx_body: ET.Element, text: str) -> None:
+    for child in list(tx_body):
+        if child.tag == f"{{{NS['a']}}}p":
+            tx_body.remove(child)
+    for line in [line for line in text.splitlines() if line.strip()] or [text]:
+        paragraph = ET.SubElement(tx_body, f"{{{NS['a']}}}p")
+        run = ET.SubElement(paragraph, f"{{{NS['a']}}}r")
+        ET.SubElement(run, f"{{{NS['a']}}}rPr", {"lang": "zh-CN", "dirty": "0"})
+        node = ET.SubElement(run, f"{{{NS['a']}}}t")
+        node.text = line.strip()
+
+
+def update_note_root(note_root: ET.Element, text: str) -> bool:
+    shapes = note_root.findall(".//p:sp", NS)
+    candidates = []
+    for shape in shapes:
+        ph = shape.find(".//p:ph", NS)
+        tx_body = shape.find("p:txBody", NS)
+        if tx_body is None:
+            continue
+        if ph is not None and ph.attrib.get("type") == "body":
+            set_text_body(tx_body, text)
+            return True
+        candidates.append(tx_body)
+    if candidates:
+        set_text_body(candidates[0], text)
+        return True
+    return False
+
+
+def write_notes_copy(pptx_path: Path, scripts: list[str], output_path: Path) -> dict:
+    updated = 0
+    missing = 0
+    with zipfile.ZipFile(pptx_path, "r") as zin:
+        note_paths = find_notes_paths(zin)
+        replacements: dict[str, bytes] = {}
+        for idx, note_path in enumerate(note_paths):
+            if idx >= len(scripts):
+                break
+            if not note_path:
+                missing += 1
+                continue
+            note_root = read_xml(zin, note_path)
+            if update_note_root(note_root, scripts[idx]):
+                replacements[note_path] = ET.tostring(note_root, encoding="utf-8", xml_declaration=True)
+                updated += 1
+            else:
+                missing += 1
+
+        with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zout:
+            for item in zin.infolist():
+                data = replacements.get(item.filename)
+                zout.writestr(item, data if data is not None else zin.read(item.filename))
+    return {"updated": updated, "missing": missing}
 
 
 def clean_note_text(chunks: list[str]) -> str:
