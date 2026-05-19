@@ -37,6 +37,13 @@ JOB_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
 server_logs: deque[dict] = deque(maxlen=300)
+token_usage_history: deque[dict] = deque(maxlen=120)
+
+TOKEN_PRICING = {
+    "input_per_million": 2.5,
+    "completion_per_million": 15.0,
+    "cache_read_per_million": 0.25,
+}
 
 
 @app.errorhandler(Exception)
@@ -128,7 +135,81 @@ def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> s
     ssl_context = build_ssl_context(verify_ssl=verify_ssl)
     with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
+    record_token_usage(payload.get("usage") or {})
     return payload["choices"][0]["message"]["content"].strip()
+
+
+def usage_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def normalize_usage(usage: dict) -> dict:
+    prompt_tokens = usage_int(usage.get("prompt_tokens"))
+    completion_tokens = usage_int(usage.get("completion_tokens"))
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    cached_tokens = usage_int(
+        prompt_details.get("cached_tokens")
+        or prompt_details.get("cache_read_input_tokens")
+    )
+    billable_input_tokens = max(0, prompt_tokens - cached_tokens)
+    return {
+        "input_tokens": billable_input_tokens,
+        "completion_tokens": completion_tokens,
+        "cache_read_tokens": cached_tokens,
+        "total_tokens": billable_input_tokens + completion_tokens + cached_tokens,
+    }
+
+
+def usage_costs(usage: dict) -> dict:
+    normalized = normalize_usage(usage)
+    input_cost = normalized["input_tokens"] / 1_000_000 * TOKEN_PRICING["input_per_million"]
+    completion_cost = normalized["completion_tokens"] / 1_000_000 * TOKEN_PRICING["completion_per_million"]
+    cache_read_cost = normalized["cache_read_tokens"] / 1_000_000 * TOKEN_PRICING["cache_read_per_million"]
+    total_cost = input_cost + completion_cost + cache_read_cost
+    return {
+        **normalized,
+        "input_cost": input_cost,
+        "completion_cost": completion_cost,
+        "cache_read_cost": cache_read_cost,
+        "total_cost": total_cost,
+    }
+
+
+def record_token_usage(usage: dict):
+    metrics = usage_costs(usage)
+    if not metrics["total_tokens"]:
+        return
+    token_usage_history.append({
+        "time": datetime.now().strftime("%H:%M:%S"),
+        **metrics,
+    })
+
+
+def token_usage_payload() -> dict:
+    settings = load_settings()
+    history = list(token_usage_history)
+    totals = {
+        "input_tokens": 0,
+        "completion_tokens": 0,
+        "cache_read_tokens": 0,
+        "total_tokens": 0,
+        "input_cost": 0.0,
+        "completion_cost": 0.0,
+        "cache_read_cost": 0.0,
+        "total_cost": 0.0,
+    }
+    for item in history:
+        for key in totals:
+            totals[key] += item[key]
+    return {
+        "model": settings.get("ai_model", "").strip(),
+        "pricing": TOKEN_PRICING,
+        "totals": totals,
+        "history": history,
+    }
 
 
 def script_prompt(
@@ -571,6 +652,11 @@ def stop_job(job_id: str):
 @app.get("/api/server-logs")
 def get_server_logs():
     return jsonify(list(server_logs))
+
+
+@app.get("/api/token-usage")
+def get_token_usage():
+    return jsonify(token_usage_payload())
 
 
 @app.get("/api/settings")

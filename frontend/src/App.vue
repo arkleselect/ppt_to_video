@@ -35,6 +35,25 @@ const downloadUrl = ref('')
 const audioUrl = ref('')
 const analyzeController = ref(null)
 const serverLogs = ref([])
+const tokenUsage = ref({
+  model: '',
+  pricing: {
+    input_per_million: 2.5,
+    completion_per_million: 15,
+    cache_read_per_million: 0.25,
+  },
+  totals: {
+    input_tokens: 0,
+    completion_tokens: 0,
+    cache_read_tokens: 0,
+    total_tokens: 0,
+    input_cost: 0,
+    completion_cost: 0,
+    cache_read_cost: 0,
+    total_cost: 0,
+  },
+  history: [],
+})
 const activeTab = ref(localStorage.getItem('activeTab') || 'single')
 const settings = ref({
   ai_base_url: '',
@@ -102,6 +121,54 @@ const logs = ref([])
 const batchPollers = new Map()
 let settingsMessageTimer = null
 let subtitleSettingsMessageTimer = null
+
+function formatTokenCount(value) {
+  const amount = Number(value || 0)
+  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(2)}M`
+  if (amount >= 1_000) return `${(amount / 1_000).toFixed(1)}K`
+  return `${Math.round(amount)}`
+}
+
+function formatUsd(value) {
+  return `$${Number(value || 0).toFixed(4)}`
+}
+
+function chartPoints(values, width = 164, height = 42) {
+  if (!values.length) {
+    return `0,${height} ${width},${height}`
+  }
+  const maxValue = Math.max(...values, 1)
+  if (values.length === 1) {
+    const y = height - (values[0] / maxValue) * height
+    return `0,${y.toFixed(1)} ${width},${y.toFixed(1)}`
+  }
+  return values.map((value, index) => {
+    const x = (index / (values.length - 1)) * width
+    const y = height - (value / maxValue) * height
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+}
+
+function historySeries(field) {
+  return tokenUsage.value.history.map((item) => Number(item[field] || 0))
+}
+
+function loadTokenUsageIfNeeded() {
+  if (activeTab.value === 'tokenUsage') {
+    loadTokenUsage()
+  }
+}
+
+async function loadTokenUsage() {
+  try {
+    tokenUsage.value = await fetch('/api/token-usage').then(readJson)
+  } catch {
+    tokenUsage.value = {
+      ...tokenUsage.value,
+      history: [],
+    }
+  }
+}
 
 async function readJson(response) {
   const text = await response.text()
@@ -857,6 +924,7 @@ async function testAIConnection() {
 onMounted(() => {
   loadVoices()
   loadSettings()
+  loadTokenUsage()
 })
 
 watch(selectedRate, () => {
@@ -865,6 +933,7 @@ watch(selectedRate, () => {
 
 watch(activeTab, (value) => {
   localStorage.setItem('activeTab', value)
+  loadTokenUsageIfNeeded()
 })
 </script>
 
@@ -883,6 +952,9 @@ watch(activeTab, (value) => {
         </button>
         <button class="nav-link" :class="{ active: activeTab === 'serverLogs' }" @click="activeTab = 'serverLogs'; loadServerLogs()">
           日志
+        </button>
+        <button class="nav-link nav-link-token" :class="{ active: activeTab === 'tokenUsage' }" @click="activeTab = 'tokenUsage'; loadTokenUsage()">
+          <span class="nav-token-head">额度消耗</span>
         </button>
         <button class="nav-link" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
           设置
@@ -1469,6 +1541,60 @@ watch(activeTab, (value) => {
               </div>
             </div>
           </section>
+        </article>
+      </section>
+    </template>
+
+    <template v-else-if="activeTab === 'tokenUsage'">
+      <section class="token-usage-layout">
+        <article class="card token-usage-card">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>Token 消耗</h2>
+            </div>
+            <div class="section-tools">
+              <button class="utility compact" @click="loadTokenUsage">刷新</button>
+            </div>
+          </div>
+          <div class="token-usage-summary">
+            <div class="token-metric">
+              <span>累计费用</span>
+              <strong>{{ formatUsd(tokenUsage.totals.total_cost) }}</strong>
+            </div>
+            <div class="token-metric">
+              <span>输入 Tokens</span>
+              <strong>{{ formatTokenCount(tokenUsage.totals.input_tokens) }}</strong>
+            </div>
+            <div class="token-metric">
+              <span>补全 Tokens</span>
+              <strong>{{ formatTokenCount(tokenUsage.totals.completion_tokens) }}</strong>
+            </div>
+            <div class="token-metric">
+              <span>缓存读取 Tokens</span>
+              <strong>{{ formatTokenCount(tokenUsage.totals.cache_read_tokens) }}</strong>
+            </div>
+          </div>
+          <div class="token-chart-panel">
+            <div class="token-chart-block">
+              <div class="token-chart-head">
+                <strong>总 Token 消耗</strong>
+                <span>{{ formatTokenCount(tokenUsage.totals.total_tokens) }}</span>
+              </div>
+              <svg class="token-chart" viewBox="0 0 640 220" aria-hidden="true">
+                <polyline :points="chartPoints(historySeries('total_tokens'), 640, 220)" />
+              </svg>
+            </div>
+          </div>
+          <div class="token-history-list">
+            <div v-if="!tokenUsage.history.length" class="empty-log">暂时还没有 AI 调用记录。</div>
+            <div v-for="item in [...tokenUsage.history].reverse()" :key="item.time + item.total_tokens" class="token-history-item">
+              <span>{{ item.time }}</span>
+              <div>
+                <strong>{{ formatUsd(item.total_cost) }}</strong>
+                <p>输入 {{ formatTokenCount(item.input_tokens) }} / 补全 {{ formatTokenCount(item.completion_tokens) }} / 缓存 {{ formatTokenCount(item.cache_read_tokens) }}</p>
+              </div>
+            </div>
+          </div>
         </article>
       </section>
     </template>
