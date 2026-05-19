@@ -56,6 +56,7 @@ def default_settings() -> dict:
         "ai_model": "",
         "ai_verify_ssl": True,
         "default_script_style": "培训讲师 · 稳妥清晰",
+        "subtitle_style": "classic",
     }
 
 
@@ -84,6 +85,7 @@ def public_settings(settings: dict) -> dict:
         "ai_model": settings.get("ai_model", ""),
         "ai_verify_ssl": settings.get("ai_verify_ssl", True),
         "default_script_style": settings.get("default_script_style", ""),
+        "subtitle_style": settings.get("subtitle_style", "classic"),
         "has_api_key": bool(settings.get("ai_api_key")),
     }
 
@@ -357,7 +359,7 @@ def preview():
     return send_file(out, mimetype="audio/mpeg", as_attachment=False)
 
 
-def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float):
+def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float, subtitle_style: str):
     job = jobs[job_id]
     out = JOB_DIR / f"{src.stem}-{job_id}.mp4"
     cmd = [
@@ -369,6 +371,8 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         "--voice",
         voice,
         f"--rate={rate}",
+        "--subtitle-style",
+        subtitle_style,
     ]
     if target_minutes is not None:
         cmd.extend(["--target-minutes", str(target_minutes)])
@@ -383,7 +387,9 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         stdout_lines.append(line)
         text = line.strip()
         if text.startswith("[progress] "):
-            append_log(job, text.replace("[progress] ", "", 1))
+            progress_text = text.replace("[progress] ", "", 1)
+            append_log(job, progress_text)
+            append_server_log(f"任务 {job_id}：{progress_text}")
     stderr = proc.stderr.read() if proc.stderr else ""
     returncode = proc.wait()
     job["stdout"] = "".join(stdout_lines)
@@ -417,6 +423,7 @@ def generate():
     src = UPLOAD_DIR / payload["upload_id"]
     if not src.exists():
         return jsonify({"error": "上传文件不存在"}), 404
+    settings = load_settings()
     job_id = uuid.uuid4().hex[:10]
     jobs[job_id] = {"status": "queued", "logs": []}
     thread = threading.Thread(
@@ -427,6 +434,7 @@ def generate():
             payload["voice"],
             payload.get("rate", "-5%"),
             float(payload["target_minutes"]) if payload.get("target_minutes") is not None else None,
+            settings.get("subtitle_style", "classic"),
         ),
         daemon=True,
     )
@@ -475,6 +483,7 @@ def update_settings():
         "ai_model": payload.get("ai_model", "").strip(),
         "ai_verify_ssl": bool(payload.get("ai_verify_ssl", True)),
         "default_script_style": payload.get("default_script_style", "").strip(),
+        "subtitle_style": payload.get("subtitle_style", "classic").strip() or "classic",
     })
     append_server_log("AI 设置已保存。")
     return jsonify(public_settings(settings))

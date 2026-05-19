@@ -12,6 +12,15 @@ const useTargetDuration = ref(false)
 const targetMinutes = ref(40)
 const voiceOpen = ref(false)
 const rateOpen = ref(false)
+const batchFileInput = ref(null)
+const batchItems = ref([])
+const batchVoiceOpen = ref(false)
+const batchRateOpen = ref(false)
+const batchUseTargetDuration = ref(false)
+const batchTargetMinutes = ref(40)
+const batchExpandedId = ref('')
+const isBatchStarting = ref(false)
+const batchAutoRun = ref(false)
 const isDragging = ref(false)
 const isAnalyzing = ref(false)
 const isPreviewing = ref(false)
@@ -24,7 +33,6 @@ const lastPolledStatus = ref('')
 const downloadUrl = ref('')
 const audioUrl = ref('')
 const analyzeController = ref(null)
-const showServerLogs = ref(false)
 const serverLogs = ref([])
 const activeTab = ref(localStorage.getItem('activeTab') || 'single')
 const settings = ref({
@@ -33,6 +41,7 @@ const settings = ref({
   ai_model: '',
   ai_verify_ssl: true,
   default_script_style: '培训讲师 · 稳妥清晰',
+  subtitle_style: 'classic',
   has_api_key: false,
 })
 const settingsMessage = ref('')
@@ -74,7 +83,13 @@ const enrichmentOptions = [
   { label: '教学化展开', value: 'teaching', hint: '增加讲解层次、原因和注意点。' },
   { label: '过渡串联', value: 'transition', hint: '强化上下文衔接，让口播更连贯。' },
 ]
+const subtitleStyleOptions = [
+  { label: '经典白字', value: 'classic', hint: '白字深描边，适合大多数培训课件。', sample: '这是当前页面的讲解字幕示例' },
+  { label: '加粗强调', value: 'bold', hint: '更醒目，适合投影或复杂背景。', sample: '这是当前页面的讲解字幕示例' },
+  { label: '轻量简洁', value: 'minimal', hint: '字号略小，画面遮挡更少。', sample: '这是当前页面的讲解字幕示例' },
+]
 const logs = ref([])
+const batchPollers = new Map()
 
 async function readJson(response) {
   const text = await response.text()
@@ -132,6 +147,297 @@ function addLog(text, state = '进行中') {
 
 function clearLogs() {
   logs.value = []
+}
+
+function makeBatchId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function createBatchItem(file) {
+  return {
+    id: makeBatchId(),
+    file,
+    name: file.name,
+    uploadId: '',
+    jobId: '',
+    slides: null,
+    chars: null,
+    status: '待开始',
+    statusTone: 'muted',
+    latestLog: '等待上传',
+    logs: [],
+    output: '',
+    error: '',
+  }
+}
+
+function addBatchFiles(fileList) {
+  const files = Array.from(fileList || []).filter((file) => file.name.toLowerCase().endsWith('.pptx'))
+  if (!files.length) return
+  batchItems.value = [
+    ...batchItems.value,
+    ...files.map(createBatchItem),
+  ]
+}
+
+function onBatchFilesChange(event) {
+  addBatchFiles(event.target.files)
+  if (batchFileInput.value) {
+    batchFileInput.value.value = ''
+  }
+}
+
+function onBatchDrop(event) {
+  isDragging.value = false
+  addBatchFiles(event.dataTransfer.files)
+}
+
+function removeBatchItem(itemId) {
+  stopBatchPolling(itemId)
+  const index = batchItems.value.findIndex((item) => item.id === itemId)
+  if (index >= 0) {
+    batchItems.value.splice(index, 1)
+  }
+  if (batchExpandedId.value === itemId) {
+    batchExpandedId.value = ''
+  }
+}
+
+function clearBatchQueue() {
+  batchItems.value.forEach((item) => stopBatchPolling(item.id))
+  batchItems.value = []
+  batchExpandedId.value = ''
+}
+
+function pushBatchLog(item, text, state = '进行中') {
+  item.logs = [
+    {
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      text,
+      state,
+    },
+    ...item.logs,
+  ]
+  item.latestLog = text
+}
+
+function batchStatusClass(item) {
+  return {
+    muted: item.statusTone === 'muted',
+    running: item.statusTone === 'running',
+    done: item.statusTone === 'done',
+  }
+}
+
+function isBatchRunnableStatus(status) {
+  return ['待开始', '待生成', '分析失败', '创建失败', '失败', '已停止', '状态读取失败', '等待中'].includes(status)
+}
+
+function hasRunningBatchItem(exceptId = '') {
+  return batchItems.value.some((item) => item.id !== exceptId && item.statusTone === 'running')
+}
+
+async function maybeStartNextBatchItem() {
+  if (!batchAutoRun.value || hasRunningBatchItem()) return
+  const nextItem = batchItems.value.find((item) => isBatchRunnableStatus(item.status))
+  if (!nextItem) {
+    batchAutoRun.value = false
+    return
+  }
+  await startBatchItem(nextItem, { force: true })
+}
+
+async function analyzeBatchItem(item) {
+  if (item.uploadId) return true
+  item.status = '分析中'
+  item.statusTone = 'running'
+  pushBatchLog(item, '正在上传并分析课件。')
+  const formData = new FormData()
+  formData.append('pptx', item.file)
+  try {
+    const data = await fetch('/api/analyze', {
+      method: 'POST',
+      body: formData,
+    }).then(readJson)
+    item.uploadId = data.upload_id
+    item.slides = data.slides
+    item.chars = data.chars
+    item.status = '待生成'
+    item.statusTone = 'muted'
+    pushBatchLog(item, `分析完成：共 ${data.slides} 页，备注约 ${data.chars} 字。`, '完成')
+    return true
+  } catch (error) {
+    item.error = error.message || '分析失败'
+    item.status = '分析失败'
+    item.statusTone = 'muted'
+    pushBatchLog(item, item.error, '失败')
+    return false
+  }
+}
+
+async function startBatchItem(item, options = {}) {
+  const { force = false } = options
+  if (item.statusTone === 'running') return false
+  if (!force && hasRunningBatchItem(item.id)) {
+    item.status = '等待中'
+    item.statusTone = 'muted'
+    pushBatchLog(item, '当前按串行队列处理，等待前一个任务完成。', '待处理')
+    batchExpandedId.value = item.id
+    return false
+  }
+  item.error = ''
+  item.output = ''
+  const ready = await analyzeBatchItem(item)
+  if (!ready) {
+    await maybeStartNextBatchItem()
+    return false
+  }
+  item.status = '排队中'
+  item.statusTone = 'running'
+  pushBatchLog(item, '已创建视频生成任务。')
+  try {
+    const data = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upload_id: item.uploadId,
+        voice: selectedVoice.value,
+        rate: selectedRate.value,
+        ...(batchUseTargetDuration.value ? { target_minutes: Number(batchTargetMinutes.value) || 40 } : {}),
+      }),
+    }).then(readJson)
+    item.jobId = data.job_id
+    item.status = '生成中'
+    item.statusTone = 'running'
+    startBatchPolling(item)
+    return true
+  } catch (error) {
+    item.error = error.message || '创建任务失败'
+    item.status = '创建失败'
+    item.statusTone = 'muted'
+    pushBatchLog(item, item.error, '失败')
+    await maybeStartNextBatchItem()
+    return false
+  }
+}
+
+function stopBatchPolling(itemId) {
+  const timer = batchPollers.get(itemId)
+  if (timer) {
+    clearInterval(timer)
+    batchPollers.delete(itemId)
+  }
+}
+
+function startBatchPolling(item) {
+  stopBatchPolling(item.id)
+  const timer = setInterval(async () => {
+    try {
+      const data = await fetch(`/api/jobs/${item.jobId}`).then(readJson)
+      if (data.logs?.length) {
+        item.logs = [...data.logs].reverse()
+        item.latestLog = data.logs[data.logs.length - 1]?.text || item.latestLog
+      }
+      if (data.status === 'queued' || data.status === 'running') {
+        item.status = data.status === 'queued' ? '排队中' : '生成中'
+        item.statusTone = 'running'
+      }
+      if (data.status === 'done') {
+        stopBatchPolling(item.id)
+        item.status = '已完成'
+        item.statusTone = 'done'
+        item.output = data.output
+        item.latestLog = '视频生成完成，可以下载。'
+        item.logs = [
+          {
+            time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+            text: '视频生成完成，可以下载。',
+            state: '完成',
+          },
+          ...item.logs,
+        ]
+        await maybeStartNextBatchItem()
+      }
+      if (data.status === 'error') {
+        stopBatchPolling(item.id)
+        item.status = '失败'
+        item.statusTone = 'muted'
+        item.error = data.logs?.[data.logs.length - 1]?.text || '视频生成失败'
+        item.latestLog = item.error
+        batchExpandedId.value = item.id
+        await maybeStartNextBatchItem()
+      }
+      if (data.status === 'stopped') {
+        stopBatchPolling(item.id)
+        item.status = '已停止'
+        item.statusTone = 'muted'
+        item.latestLog = '任务已停止。'
+        await maybeStartNextBatchItem()
+      }
+    } catch (error) {
+      stopBatchPolling(item.id)
+      item.status = '状态读取失败'
+      item.statusTone = 'muted'
+      item.error = error.message || '读取任务状态失败'
+      item.latestLog = item.error
+      batchExpandedId.value = item.id
+      await maybeStartNextBatchItem()
+    }
+  }, 2000)
+  batchPollers.set(item.id, timer)
+}
+
+async function startAllBatchItems() {
+  if (!batchItems.value.length || isBatchStarting.value) return
+  isBatchStarting.value = true
+  try {
+    for (const item of batchItems.value) {
+      if (!isBatchRunnableStatus(item.status)) {
+        continue
+      }
+      if (item.status !== '等待中') {
+        item.status = '等待中'
+        item.statusTone = 'muted'
+        item.latestLog = '等待批量队列启动。'
+      }
+    }
+    batchAutoRun.value = true
+    await maybeStartNextBatchItem()
+  } finally {
+    isBatchStarting.value = false
+  }
+}
+
+async function stopBatchItem(item) {
+  if (batchAutoRun.value) {
+    batchAutoRun.value = false
+  }
+  if (!item.jobId) {
+    item.status = '已停止'
+    item.statusTone = 'muted'
+    item.latestLog = '任务未开始。'
+    return
+  }
+  try {
+    await fetch(`/api/jobs/${item.jobId}/stop`, { method: 'POST' }).then(readJson)
+  } catch {}
+  stopBatchPolling(item.id)
+  item.status = '已停止'
+  item.statusTone = 'muted'
+  pushBatchLog(item, '已请求停止生成任务。', '已停止')
+}
+
+async function stopAllBatchItems() {
+  batchAutoRun.value = false
+  await Promise.all(
+    batchItems.value
+      .filter((item) => item.jobId && item.statusTone === 'running')
+      .map((item) => stopBatchItem(item)),
+  )
+}
+
+function batchOutputUrl(item) {
+  return item.output ? `/api/download/${item.output}` : ''
 }
 
 function setScriptFile(file) {
@@ -285,6 +591,10 @@ function enrichmentOption(value) {
   return enrichmentOptions.find((item) => item.value === value) || enrichmentOptions[1]
 }
 
+function subtitleStyleOption(value) {
+  return subtitleStyleOptions.find((item) => item.value === value) || subtitleStyleOptions[0]
+}
+
 async function analyzeFile() {
   if (!selectedFile.value) {
     addLog('请先选择一个 PPTX 文件。', '待处理')
@@ -420,7 +730,6 @@ async function loadServerLogs() {
       throw new Error(`HTTP ${response.status}`)
     }
     serverLogs.value = await response.json()
-    showServerLogs.value = !showServerLogs.value
   } catch {
     addLog('无法读取后端日志，请确认后端已重启到最新版本。', '失败')
   }
@@ -502,6 +811,9 @@ watch(activeTab, (value) => {
         <button class="nav-link" :class="{ active: activeTab === 'script' }" @click="activeTab = 'script'">
           讲稿生成
         </button>
+        <button class="nav-link" :class="{ active: activeTab === 'serverLogs' }" @click="activeTab = 'serverLogs'; loadServerLogs()">
+          日志
+        </button>
         <button class="nav-link" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
           设置
         </button>
@@ -516,7 +828,7 @@ watch(activeTab, (value) => {
       <article class="card">
         <h2>上传课件</h2>
         <label
-          class="dropzone"
+          class="dropzone batch-dropzone"
           :class="{ dragging: isDragging }"
           @dragenter.prevent="isDragging = true"
           @dragover.prevent="isDragging = true"
@@ -664,7 +976,6 @@ watch(activeTab, (value) => {
           </span>
         </div>
         <div class="section-tools">
-          <button class="utility compact" @click="loadServerLogs">查看日志</button>
           <button class="utility compact" @click="clearLogs">清空日志</button>
         </div>
       </div>
@@ -676,19 +987,6 @@ watch(activeTab, (value) => {
           <span class="log-state" :class="{ done: item.state === '完成' }">{{ item.state }}</span>
         </div>
       </div>
-      <section v-if="showServerLogs" class="server-log-panel">
-        <div class="section-head inline-log-head">
-          <h2>后端日志</h2>
-          <button class="utility compact" @click="showServerLogs = false">收起</button>
-        </div>
-        <div class="server-log-list">
-          <div v-if="!serverLogs.length" class="empty-log">暂无后端日志。</div>
-          <div v-for="item in serverLogs" :key="item.time + item.text" class="server-log-item">
-            <span>{{ item.time }}</span>
-            <pre :class="{ error: item.level === 'error' }">{{ item.text }}</pre>
-          </div>
-        </div>
-      </section>
     </section>
     </template>
 
@@ -696,10 +994,26 @@ watch(activeTab, (value) => {
       <section class="batch-layout">
         <article class="card batch-upload">
           <h2>批量上传</h2>
-          <div class="dropzone batch-dropzone">
+          <label
+            class="dropzone batch-dropzone"
+            :class="{ dragging: isDragging }"
+            @dragenter.prevent="isDragging = true"
+            @dragover.prevent="isDragging = true"
+            @dragleave.prevent="isDragging = false"
+            @drop.prevent="onBatchDrop"
+          >
+            <input ref="batchFileInput" type="file" accept=".pptx" multiple @change="onBatchFilesChange" />
             <FileUp :size="22" />
             <strong>拖入多个 PPTX，或点击选择文件</strong>
-            <span>支持一次处理多份课件</span>
+            <span>{{ batchItems.length ? `已加入 ${batchItems.length} 个文件` : '支持一次处理多份课件' }}</span>
+          </label>
+          <div class="upload-actions">
+            <button class="primary" @click="startAllBatchItems">
+              <LoaderCircle v-if="isBatchStarting" :size="16" class="spin" />
+              {{ isBatchStarting ? '启动中' : '全部开始' }}
+            </button>
+            <button class="danger" @click="stopAllBatchItems">全部停止</button>
+            <button v-if="batchItems.length" class="clear-file" @click="clearBatchQueue">清空队列</button>
           </div>
         </article>
 
@@ -709,24 +1023,64 @@ watch(activeTab, (value) => {
             <label>
               <span>统一音色</span>
               <div class="select">
-                <button class="select-trigger">
+                <button class="select-trigger" @click="batchVoiceOpen = !batchVoiceOpen">
                   {{ voiceLabel(selectedVoice) }}
                   <ChevronDown :size="18" />
                 </button>
+                <div v-if="batchVoiceOpen" class="select-menu">
+                  <button
+                    v-for="voice in voices"
+                    :key="voice.id"
+                    class="select-option"
+                    :class="{ active: voice.id === selectedVoice }"
+                    @click="selectedVoice = voice.id; batchVoiceOpen = false"
+                  >
+                    <Check v-if="voice.id === selectedVoice" :size="16" />
+                    <span>{{ voiceLabel(voice.id) }}</span>
+                  </button>
+                </div>
               </div>
             </label>
             <label>
               <span>统一语速</span>
               <div class="select">
-                <button class="select-trigger">
+                <button class="select-trigger" @click="batchRateOpen = !batchRateOpen">
                   {{ rateLabel(selectedRate) }}
                   <ChevronDown :size="18" />
                 </button>
+                <div v-if="batchRateOpen" class="select-menu">
+                  <button
+                    v-for="rate in rates"
+                    :key="rate.value"
+                    class="select-option"
+                    :class="{ active: rate.value === selectedRate }"
+                    @click="selectedRate = rate.value; batchRateOpen = false"
+                  >
+                    <Check v-if="rate.value === selectedRate" :size="16" />
+                    <span>{{ rate.label }}</span>
+                  </button>
+                </div>
               </div>
             </label>
             <label>
-              <span>目标时长策略</span>
-              <div class="batch-policy">默认按自然时长生成</div>
+              <span class="duration-label">
+                统一目标时长
+                <span class="tooltip-wrap">
+                  <CircleHelp :size="15" />
+                  <span class="tooltip">
+                    开启后，每个文件都会按同一目标总时长策略生成；关闭时，全部按自然时长生成。
+                  </span>
+                </span>
+              </span>
+              <div class="duration-row">
+                <button class="toggle" :class="{ enabled: batchUseTargetDuration }" @click="batchUseTargetDuration = !batchUseTargetDuration">
+                  <span></span>
+                </button>
+                <div class="duration-input" :class="{ disabled: !batchUseTargetDuration }">
+                  <input v-model="batchTargetMinutes" type="number" min="1" step="1" :disabled="!batchUseTargetDuration" />
+                  <span>分钟</span>
+                </div>
+              </div>
             </label>
           </div>
         </article>
@@ -735,31 +1089,45 @@ watch(activeTab, (value) => {
           <div class="section-head">
             <div class="section-title">
               <h2>任务队列</h2>
-              <span>3 个文件</span>
-            </div>
-            <div class="section-tools">
-              <button class="primary">全部开始</button>
-              <button class="utility">全部停止</button>
+              <span>{{ batchItems.length ? `${batchItems.length} 个文件` : '等待加入文件' }}</span>
             </div>
           </div>
           <div class="queue-list">
-            <div class="queue-row">
-              <span>档案展平规范培训.pptx</span>
-              <span class="muted">80 页</span>
-              <span class="running">生成音频 12 / 80</span>
-              <button class="utility compact">详情</button>
+            <div v-if="!batchItems.length" class="empty-log">
+              还没有批量任务，先拖入多个 PPTX 文件。
             </div>
-            <div class="queue-row">
-              <span>纸质档案扫描准备.pptx</span>
-              <span class="muted">42 页</span>
-              <span class="muted">等待中</span>
-              <button class="utility compact">详情</button>
-            </div>
-            <div class="queue-row">
-              <span>档案修复安全须知.pptx</span>
-              <span class="muted">36 页</span>
-              <span class="done">已完成</span>
-              <button class="utility compact">下载</button>
+            <div v-for="item in batchItems" :key="item.id" class="queue-item">
+              <div class="queue-row">
+                <span class="queue-file">
+                  <strong>{{ item.name }}</strong>
+                  <small>{{ item.latestLog }}</small>
+                </span>
+                <span class="muted">{{ item.slides ? `${item.slides} 页` : '待分析' }}</span>
+                <span :class="batchStatusClass(item)">{{ item.status }}</span>
+                <div class="queue-actions">
+                  <a v-if="item.output" class="utility compact" :href="batchOutputUrl(item)">
+                    下载
+                  </a>
+                  <button v-else-if="item.statusTone === 'running'" class="danger compact" @click="stopBatchItem(item)">停止</button>
+                  <button v-else class="utility compact" @click="startBatchItem(item)">开始</button>
+                  <button class="utility compact" @click="batchExpandedId = batchExpandedId === item.id ? '' : item.id">详情</button>
+                  <button class="utility compact" @click="removeBatchItem(item.id)">移除</button>
+                </div>
+              </div>
+              <div v-if="batchExpandedId === item.id" class="batch-detail">
+                <div class="batch-detail-meta">
+                  <span>备注字数：{{ item.chars ?? '待分析' }}</span>
+                  <span>任务 ID：{{ item.jobId || '尚未创建' }}</span>
+                </div>
+                <div class="batch-log-list">
+                  <div v-if="!item.logs.length" class="empty-log">还没有日志。</div>
+                  <div v-for="log in item.logs" :key="`${log.time}-${log.text}`" class="batch-log-item">
+                    <span>{{ log.time }}</span>
+                    <span>{{ log.text }}</span>
+                    <span>{{ log.state }}</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </article>
@@ -897,9 +1265,40 @@ watch(activeTab, (value) => {
             </a>
           </div>
           <p v-if="scriptGenerateMessage" class="settings-message">{{ scriptGenerateMessage }}</p>
-          <div class="server-log-panel">
-            <div class="inline-log-head">
-              <strong>讲稿生成日志</strong>
+        </article>
+
+        <article class="card script-dual-panel">
+          <section class="script-panel-column">
+            <div class="section-head">
+              <div class="section-title">
+                <h2>讲稿结果</h2>
+                <span>显示每页生成的讲稿内容</span>
+              </div>
+              <div class="section-tools">
+                <button class="utility compact">保存为备注</button>
+                <button class="utility compact">进入单个生成</button>
+              </div>
+            </div>
+            <div class="script-pages">
+              <div v-if="!generatedScripts.length" class="empty-log">
+                {{ scriptSlides.length ? '课件已分析完成；生成讲稿后，这里会显示逐页结果。' : '上传并分析 PPT 后，这里会显示逐页讲稿结果。' }}
+              </div>
+              <div v-for="item in generatedScripts" :key="item.index" class="script-page">
+                <div>
+                  <strong>第 {{ item.index }} 页 · {{ item.title }}</strong>
+                  <p>{{ item.script }}</p>
+                </div>
+                <button class="utility compact">编辑</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="script-panel-column script-panel-log">
+            <div class="section-head">
+              <div class="section-title">
+                <h2>讲稿生成日志</h2>
+                <span>显示讲稿任务的页级进度和失败信息</span>
+              </div>
             </div>
             <div class="server-log-list">
               <div v-if="!scriptLogs.length" class="empty-log">
@@ -910,37 +1309,12 @@ watch(activeTab, (value) => {
                 <pre :class="{ error: item.state === '失败' }">{{ item.text }}</pre>
               </div>
             </div>
-          </div>
-        </article>
-
-        <article class="card script-preview">
-          <div class="section-head">
-            <div class="section-title">
-              <h2>逐页讲稿结果</h2>
-              <span>这里显示每一页最终生成的讲稿内容</span>
-            </div>
-            <div class="section-tools">
-              <button class="utility compact">保存为备注</button>
-              <button class="utility compact">进入单个生成</button>
-            </div>
-          </div>
-          <div class="script-pages">
-            <div v-if="!generatedScripts.length" class="empty-log">
-              {{ scriptSlides.length ? '课件已分析完成；生成讲稿后，这里会显示逐页结果。' : '上传并分析 PPT 后，这里会显示逐页讲稿结果。' }}
-            </div>
-            <div v-for="item in generatedScripts" :key="item.index" class="script-page">
-              <div>
-                <strong>第 {{ item.index }} 页 · {{ item.title }}</strong>
-                <p>{{ item.script }}</p>
-              </div>
-              <button class="utility compact">编辑</button>
-            </div>
-          </div>
+          </section>
         </article>
       </section>
     </template>
 
-    <template v-else>
+    <template v-else-if="activeTab === 'settings'">
       <section class="settings-layout">
         <article class="card settings-card">
           <div class="section-head">
@@ -994,6 +1368,57 @@ watch(activeTab, (value) => {
             <p>例如 <code>https://api.openai.com/v1</code>。</p>
             <p>如果你使用的是自签名证书、公司网关或中转服务，可先关闭“校验 SSL 证书”再测试。</p>
             <p>讲稿生成页会读取这里的配置；没有配置时，不应发起 AI 生成。</p>
+          </div>
+        </article>
+
+        <article class="card settings-card subtitle-settings-card">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>字幕样式</h2>
+              <span>生成视频时会自动压制字幕，这里选择默认样式</span>
+            </div>
+          </div>
+          <div class="subtitle-style-grid">
+            <button
+              v-for="option in subtitleStyleOptions"
+              :key="option.value"
+              class="subtitle-style-card"
+              :class="[option.value, { active: settings.subtitle_style === option.value }]"
+              @click="settings.subtitle_style = option.value"
+            >
+              <div class="subtitle-preview-frame">
+                <div class="subtitle-preview-bg"></div>
+                <div class="subtitle-preview-text">{{ option.sample }}</div>
+              </div>
+              <div class="subtitle-style-copy">
+                <strong>{{ option.label }}</strong>
+                <span>{{ option.hint }}</span>
+              </div>
+              <Check v-if="settings.subtitle_style === option.value" :size="16" class="subtitle-style-check" />
+            </button>
+          </div>
+        </article>
+      </section>
+    </template>
+
+    <template v-else>
+      <section class="server-logs-layout">
+        <article class="card">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>后端日志</h2>
+              <span>查看服务端运行、AI 调用和任务执行记录</span>
+            </div>
+            <div class="section-tools">
+              <button class="utility compact" @click="loadServerLogs">刷新</button>
+            </div>
+          </div>
+          <div class="server-log-list">
+            <div v-if="!serverLogs.length" class="empty-log">暂无后端日志。</div>
+            <div v-for="item in serverLogs" :key="item.time + item.text" class="server-log-item">
+              <span>{{ item.time }}</span>
+              <pre :class="{ error: item.level === 'error' }">{{ item.text }}</pre>
+            </div>
           </div>
         </article>
       </section>

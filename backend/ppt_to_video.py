@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import re
 import shutil
 import subprocess
@@ -272,22 +273,83 @@ def duration(path: Path) -> float:
     return MP3(path).info.length
 
 
-def build_video(slides: list[Path], audios: list[Path], output_path: Path, target_minutes: float | None) -> tuple[float, float]:
+def subtitle_styles() -> dict[str, str]:
+    return {
+        "classic": "FontName=Noto Sans CJK SC,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00333333,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginL=60,MarginR=60,MarginV=34",
+        "bold": "FontName=Noto Sans CJK SC,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H005A2A18,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginL=52,MarginR=52,MarginV=32",
+        "minimal": "FontName=Noto Sans CJK SC,FontSize=17,PrimaryColour=&H00F8F6F0,OutlineColour=&H00202020,BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginL=72,MarginR=72,MarginV=28",
+    }
+
+
+def ass_time(seconds: float) -> str:
+    total_cs = max(0, int(round(seconds * 100)))
+    hours = total_cs // 360000
+    minutes = (total_cs % 360000) // 6000
+    secs = (total_cs % 6000) // 100
+    centis = total_cs % 100
+    return f"{hours}:{minutes:02d}:{secs:02d}.{centis:02d}"
+
+
+def wrap_subtitle_text(text: str, max_chars: int = 22) -> str:
+    compact = re.sub(r"\s+", "", text or "")
+    if not compact:
+        return "本页暂无备注。"
+    lines = [compact[i:i + max_chars] for i in range(0, len(compact), max_chars)]
+    if len(lines) > 2:
+        midpoint = math.ceil(len(compact) / 2)
+        midpoint = min(max_chars, max(1, midpoint))
+        lines = [compact[:midpoint], compact[midpoint:midpoint + max_chars]]
+    return r"\N".join(line for line in lines if line)
+
+
+def write_ass_subtitles(notes: list[str], page_durations: list[float], output_path: Path, style_name: str) -> None:
+    style = subtitle_styles().get(style_name, subtitle_styles()["classic"])
+    lines = [
+        "[Script Info]",
+        "ScriptType: v4.00+",
+        "PlayResX: 1920",
+        "PlayResY: 1080",
+        "",
+        "[V4+ Styles]",
+        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
+        f"Style: Default,{style},0",
+        "",
+        "[Events]",
+        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
+    ]
+    elapsed = 0.0
+    for note, page_duration in zip(notes, page_durations):
+        start = ass_time(elapsed)
+        elapsed += page_duration
+        end = ass_time(elapsed)
+        text = wrap_subtitle_text(note).replace("{", r"\{").replace("}", r"\}")
+        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+    output_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def build_video(
+    slides: list[Path],
+    audios: list[Path],
+    notes: list[str],
+    output_path: Path,
+    target_minutes: float | None,
+    subtitle_style: str,
+) -> tuple[float, float]:
     raw_durations = [duration(p) for p in audios]
     natural_total = sum(raw_durations)
     target_total = (target_minutes or 0) * 60
     extra = max(0.0, target_total - natural_total)
     pad_each = extra / len(slides) if slides else 0.0
+    page_durations = [raw_duration + pad_each for raw_duration in raw_durations]
 
     with tempfile.TemporaryDirectory() as td:
         work = Path(td)
         concat_file = work / "concat.txt"
-        audio_concat = work / "audio_concat.txt"
+        subtitle_file = work / "subtitles.ass"
         video_parts: list[Path] = []
-        audio_parts: list[Path] = []
+        merged_video = work / "merged.mp4"
 
-        for idx, (slide, audio, raw_duration) in enumerate(zip(slides, audios, raw_durations), start=1):
-            page_duration = raw_duration + pad_each
+        for idx, (slide, audio, page_duration) in enumerate(zip(slides, audios, page_durations), start=1):
             part = work / f"page_{idx:03d}.mp4"
             padded_audio = work / f"audio_{idx:03d}.mp3"
 
@@ -317,7 +379,6 @@ def build_video(slides: list[Path], audios: list[Path], output_path: Path, targe
                 str(part),
             ])
             video_parts.append(part)
-            audio_parts.append(padded_audio)
             print(f"[progress] 合成页面视频 {idx}/{len(slides)}", flush=True)
 
         concat_file.write_text("".join(f"file '{p}'\n" for p in video_parts), encoding="utf-8")
@@ -327,9 +388,21 @@ def build_video(slides: list[Path], audios: list[Path], output_path: Path, targe
             "-safe", "0",
             "-i", str(concat_file),
             "-c", "copy",
-            str(output_path),
+            str(merged_video),
         ])
         print("[progress] 已完成最终视频拼接", flush=True)
+        write_ass_subtitles(notes, page_durations, subtitle_file, subtitle_style)
+        print("[progress] 已生成字幕文件，开始压制字幕", flush=True)
+        run([
+            "ffmpeg", "-loglevel", "error", "-y",
+            "-i", str(merged_video),
+            "-vf", f"subtitles={subtitle_file.as_posix()}",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-c:a", "copy",
+            str(output_path),
+        ])
+        print("[progress] 已完成字幕压制", flush=True)
     return natural_total, natural_total + extra
 
 
@@ -344,6 +417,7 @@ def main() -> int:
     parser.add_argument("--target-minutes", type=float, default=None)
     parser.add_argument("--voice", default="zh-CN-XiaoxiaoNeural")
     parser.add_argument("--rate", default="-5%")
+    parser.add_argument("--subtitle-style", default="classic")
     args = parser.parse_args()
 
     pptx_path = args.pptx.expanduser().resolve()
@@ -376,7 +450,14 @@ def main() -> int:
         print(f"警告：导出图片 {len(slides)} 张，备注 {len(notes)} 页。", file=sys.stderr)
 
     audios = asyncio.run(synthesize_all(notes, work_dir / "audio", args.voice, args.rate))
-    natural_total, final_total = build_video(slides, audios, output_path, args.target_minutes)
+    natural_total, final_total = build_video(
+        slides,
+        audios,
+        notes,
+        output_path,
+        args.target_minutes,
+        args.subtitle_style,
+    )
     print(f"自然配音时长：{natural_total / 60:.2f} 分钟")
     print(f"最终视频时长：{final_total / 60:.2f} 分钟")
     print(f"输出完成：{output_path}")
