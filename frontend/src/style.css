@@ -556,6 +556,126 @@ input {
   border-bottom: 0;
 }
 
+.script-layout {
+  display: grid;
+  grid-template-columns: 1.05fr .95fr;
+  gap: 20px;
+}
+
+.script-preview {
+  grid-column: 1 / -1;
+}
+
+.script-strategy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.strategy-pill {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 249, .78);
+  color: var(--ink);
+  padding: 9px 12px;
+  font-size: 14px;
+  transition: .18s ease;
+}
+
+.strategy-pill.active {
+  border-color: rgba(162, 79, 44, .42);
+  background: rgba(162, 79, 44, .08);
+  color: var(--accent-deep);
+}
+
+.strategy-pill:hover {
+  border-color: var(--accent);
+  background: rgba(162, 79, 44, .06);
+}
+
+.strategy-pill span {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 10px);
+  width: 260px;
+  z-index: 20;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--white);
+  box-shadow: var(--shadow-card);
+  color: var(--ink);
+  line-height: 1.6;
+  text-align: left;
+  opacity: 0;
+  pointer-events: none;
+  transition: .18s ease;
+}
+
+.strategy-pill:hover span {
+  opacity: 1;
+}
+
+.script-pages {
+  display: grid;
+}
+
+.script-page {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 18px;
+  align-items: start;
+  padding: 16px 0;
+  border-bottom: 1px solid rgba(207, 196, 178, .7);
+}
+
+.script-page:last-child {
+  border-bottom: 0;
+}
+
+.script-page p {
+  margin: 8px 0 0;
+  color: var(--ink-soft);
+  line-height: 1.8;
+}
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 1.1fr .9fr;
+  gap: 20px;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 20px;
+}
+
+.settings-message {
+  margin: 16px 0 0;
+  color: var(--accent-deep);
+}
+
+.settings-note {
+  display: grid;
+  gap: 12px;
+  color: var(--ink-soft);
+  line-height: 1.8;
+}
+
+.settings-note p {
+  margin: 0;
+}
+
+.settings-note code {
+  color: var(--ink);
+  background: rgba(162, 79, 44, .07);
+  border-radius: var(--radius-sm);
+  padding: 2px 5px;
+}
+
 .server-log-panel {
   margin-top: 18px;
   padding-top: 18px;
@@ -616,7 +736,19 @@ input {
     grid-template-columns: 1fr;
   }
 
+  .script-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
+
   .batch-table {
+    grid-column: auto;
+  }
+
+  .script-preview {
     grid-column: auto;
   }
 

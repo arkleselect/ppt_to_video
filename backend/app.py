@@ -12,6 +12,8 @@ import uuid
 from datetime import datetime
 from collections import deque
 from pathlib import Path
+from urllib import error as url_error
+from urllib import request as url_request
 
 import edge_tts
 from flask import Flask, jsonify, request, send_file
@@ -24,12 +26,50 @@ BASE_DIR = Path(__file__).parent.resolve()
 STORAGE_DIR = BASE_DIR / "storage"
 UPLOAD_DIR = STORAGE_DIR / "uploads"
 JOB_DIR = STORAGE_DIR / "jobs"
+SETTINGS_FILE = STORAGE_DIR / "settings.json"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 JOB_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
 server_logs: deque[dict] = deque(maxlen=300)
+
+
+def default_settings() -> dict:
+    return {
+        "ai_base_url": "",
+        "ai_api_key": "",
+        "ai_model": "",
+        "default_script_style": "培训讲师 · 稳妥清晰",
+    }
+
+
+def load_settings() -> dict:
+    if not SETTINGS_FILE.exists():
+        return default_settings()
+    try:
+        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        return {**default_settings(), **data}
+    except Exception:
+        return default_settings()
+
+
+def save_settings(data: dict) -> dict:
+    current = load_settings()
+    merged = {**current, **data}
+    if data.get("ai_api_key", "") == "":
+        merged["ai_api_key"] = current.get("ai_api_key", "")
+    SETTINGS_FILE.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+    return merged
+
+
+def public_settings(settings: dict) -> dict:
+    return {
+        "ai_base_url": settings.get("ai_base_url", ""),
+        "ai_model": settings.get("ai_model", ""),
+        "default_script_style": settings.get("default_script_style", ""),
+        "has_api_key": bool(settings.get("ai_api_key")),
+    }
 
 
 def append_log(job: dict, text: str, state: str = "进行中"):
@@ -201,6 +241,51 @@ def stop_job(job_id: str):
 @app.get("/api/server-logs")
 def get_server_logs():
     return jsonify(list(server_logs))
+
+
+@app.get("/api/settings")
+def get_settings():
+    return jsonify(public_settings(load_settings()))
+
+
+@app.post("/api/settings")
+def update_settings():
+    payload = request.get_json(force=True)
+    settings = save_settings({
+        "ai_base_url": payload.get("ai_base_url", "").strip().rstrip("/"),
+        "ai_api_key": payload.get("ai_api_key", "").strip(),
+        "ai_model": payload.get("ai_model", "").strip(),
+        "default_script_style": payload.get("default_script_style", "").strip(),
+    })
+    append_server_log("AI 设置已保存。")
+    return jsonify(public_settings(settings))
+
+
+@app.post("/api/settings/test-ai")
+def test_ai_settings():
+    payload = request.get_json(silent=True) or {}
+    settings = {**load_settings(), **payload}
+    base_url = settings.get("ai_base_url", "").strip().rstrip("/")
+    api_key = settings.get("ai_api_key", "").strip()
+    model = settings.get("ai_model", "").strip()
+    if not base_url or not api_key or not model:
+        return jsonify({"ok": False, "message": "请先填写 Base URL、API Key 和 Model。"}), 400
+
+    req = url_request.Request(
+        f"{base_url}/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+        method="GET",
+    )
+    try:
+        with url_request.urlopen(req, timeout=12) as resp:
+            append_server_log("AI 连接测试成功。")
+            return jsonify({"ok": True, "message": f"连接成功，服务返回 HTTP {resp.status}。"})
+    except url_error.HTTPError as exc:
+        append_server_log(f"AI 连接测试失败：HTTP {exc.code}", "error")
+        return jsonify({"ok": False, "message": f"连接失败：HTTP {exc.code}。"}), 400
+    except Exception as exc:
+        append_server_log(f"AI 连接测试失败：{exc}", "error")
+        return jsonify({"ok": False, "message": f"连接失败：{exc}"}), 400
 
 
 @app.get("/api/download/<filename>")

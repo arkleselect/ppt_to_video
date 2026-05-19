@@ -1,6 +1,6 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
-import { Check, ChevronDown, CircleHelp, Download, FileUp, LoaderCircle, Play, Sparkles, Square } from 'lucide-vue-next'
+import { Check, ChevronDown, CircleHelp, Download, FileUp, LoaderCircle, Square } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
 const selectedFile = ref(null)
@@ -27,6 +27,16 @@ const analyzeController = ref(null)
 const showServerLogs = ref(false)
 const serverLogs = ref([])
 const activeTab = ref('single')
+const settings = ref({
+  ai_base_url: '',
+  ai_api_key: '',
+  ai_model: '',
+  default_script_style: '培训讲师 · 稳妥清晰',
+  has_api_key: false,
+})
+const settingsMessage = ref('')
+const isSavingSettings = ref(false)
+const isTestingAI = ref(false)
 
 const voices = ref([])
 const rates = [
@@ -239,7 +249,59 @@ async function loadServerLogs() {
   }
 }
 
-onMounted(loadVoices)
+async function loadSettings() {
+  try {
+    const data = await fetch('/api/settings').then((r) => r.json())
+    settings.value = {
+      ...settings.value,
+      ...data,
+      ai_api_key: '',
+    }
+  } catch {
+    settingsMessage.value = '读取设置失败，请确认后端已启动。'
+  }
+}
+
+async function saveAISettings() {
+  isSavingSettings.value = true
+  settingsMessage.value = ''
+  try {
+    const data = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings.value),
+    }).then((r) => r.json())
+    settings.value = { ...settings.value, ...data, ai_api_key: '' }
+    settingsMessage.value = '设置已保存。'
+  } catch {
+    settingsMessage.value = '保存失败，请确认后端已启动。'
+  } finally {
+    isSavingSettings.value = false
+  }
+}
+
+async function testAIConnection() {
+  isTestingAI.value = true
+  settingsMessage.value = ''
+  try {
+    const response = await fetch('/api/settings/test-ai', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings.value),
+    })
+    const data = await response.json()
+    settingsMessage.value = data.message
+  } catch {
+    settingsMessage.value = '测试失败，请确认后端已启动。'
+  } finally {
+    isTestingAI.value = false
+  }
+}
+
+onMounted(() => {
+  loadVoices()
+  loadSettings()
+})
 
 watch(selectedRate, () => {
   estimatedMinutes.value = null
@@ -255,6 +317,12 @@ watch(selectedRate, () => {
         </button>
         <button class="nav-link" :class="{ active: activeTab === 'batch' }" @click="activeTab = 'batch'">
           批量生成
+        </button>
+        <button class="nav-link" :class="{ active: activeTab === 'script' }" @click="activeTab = 'script'">
+          讲稿生成
+        </button>
+        <button class="nav-link" :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'">
+          设置
         </button>
       </nav>
     </div>
@@ -380,12 +448,10 @@ watch(selectedRate, () => {
         <div class="actions">
           <button class="primary" @click="generateVideo">
             <LoaderCircle v-if="isGenerating" :size="16" class="spin" />
-            <Sparkles v-else :size="16" />
             {{ isGenerating ? '生成中' : '开始生成' }}
           </button>
           <button class="secondary" @click="previewVoice">
             <LoaderCircle v-if="isPreviewing" :size="16" class="spin" />
-            <Play v-else :size="16" />
             {{ isPreviewing ? '生成试听中' : '试听音色' }}
           </button>
           <button class="secondary" @click="estimateDuration">
@@ -445,7 +511,7 @@ watch(selectedRate, () => {
     </section>
     </template>
 
-    <template v-else>
+    <template v-else-if="activeTab === 'batch'">
       <section class="batch-layout">
         <article class="card batch-upload">
           <h2>批量上传</h2>
@@ -514,6 +580,138 @@ watch(selectedRate, () => {
               <span class="done">已完成</span>
               <button class="utility compact">下载</button>
             </div>
+          </div>
+        </article>
+      </section>
+    </template>
+
+    <template v-else-if="activeTab === 'script'">
+      <section class="script-layout">
+        <article class="card script-upload">
+          <h2>上传课件</h2>
+          <div class="dropzone batch-dropzone">
+            <FileUp :size="22" />
+            <strong>上传需要生成讲稿的 PPTX</strong>
+            <span>系统将读取每页标题、正文与原备注，生成更完整的中文讲解词</span>
+          </div>
+          <div class="script-strategy-actions">
+            <button class="strategy-pill active">
+              只补短备注
+              <span>备注过短的页面才扩写，适合已有基础讲稿的 PPT。</span>
+            </button>
+            <button class="strategy-pill">
+              全部重写
+              <span>按统一讲师风格重写每页讲解词。</span>
+            </button>
+            <button class="strategy-pill">
+              按目标时长生成
+              <span>根据期望总时长分配每页字数，比硬加停顿更自然。</span>
+            </button>
+          </div>
+        </article>
+
+        <article class="card script-style">
+          <h2>讲解风格</h2>
+          <div class="form">
+            <label>
+              <span>风格</span>
+              <div class="select">
+                <button class="select-trigger">
+                  培训讲师 · 稳妥清晰
+                  <ChevronDown :size="18" />
+                </button>
+              </div>
+            </label>
+            <label>
+              <span>补充程度</span>
+              <div class="batch-policy">只基于 PPT 内容，允许少量背景解释</div>
+            </label>
+          </div>
+          <div class="actions">
+            <button class="primary">生成讲稿</button>
+            <button class="secondary">预估讲稿时长</button>
+          </div>
+        </article>
+
+        <article class="card script-preview">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>讲稿预览</h2>
+              <span>逐页确认后，可进入视频生成</span>
+            </div>
+            <div class="section-tools">
+              <button class="utility compact">保存为备注</button>
+              <button class="utility compact">进入单个生成</button>
+            </div>
+          </div>
+          <div class="script-pages">
+            <div class="script-page">
+              <div>
+                <strong>第 1 页 · 培训导入</strong>
+                <p>大家好，欢迎参加本次档案数字化管理师的专业培训。今天我们将围绕折皱档案展平处理规范展开说明……</p>
+              </div>
+              <button class="utility compact">编辑</button>
+            </div>
+            <div class="script-page">
+              <div>
+                <strong>第 2 页 · 为什么要展平</strong>
+                <p>首先我们来看档案展平的必要性。展平不仅影响扫描图像质量，也关系到档案实体的长期保护……</p>
+              </div>
+              <button class="utility compact">编辑</button>
+            </div>
+          </div>
+        </article>
+      </section>
+    </template>
+
+    <template v-else>
+      <section class="settings-layout">
+        <article class="card settings-card">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>AI 设置</h2>
+              <span>配置 OpenAI 兼容接口，用于讲稿生成</span>
+            </div>
+          </div>
+          <div class="form">
+            <label>
+              <span>Base URL</span>
+              <input v-model="settings.ai_base_url" placeholder="https://api.openai.com/v1" />
+            </label>
+            <label>
+              <span>API Key</span>
+              <input
+                v-model="settings.ai_api_key"
+                type="password"
+                :placeholder="settings.has_api_key ? '已保存；留空则不修改' : '请输入 API Key'"
+              />
+            </label>
+            <label>
+              <span>Model</span>
+              <input v-model="settings.ai_model" placeholder="gpt-4.1-mini" />
+            </label>
+            <label>
+              <span>默认讲解风格</span>
+              <input v-model="settings.default_script_style" />
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button class="primary" @click="saveAISettings">
+              {{ isSavingSettings ? '保存中' : '保存设置' }}
+            </button>
+            <button class="secondary" @click="testAIConnection">
+              {{ isTestingAI ? '测试中' : '测试连接' }}
+            </button>
+          </div>
+          <p v-if="settingsMessage" class="settings-message">{{ settingsMessage }}</p>
+        </article>
+
+        <article class="card settings-card">
+          <h2>说明</h2>
+          <div class="settings-note">
+            <p>API Key 会保存在本机 <code>backend/storage/settings.json</code>，该目录已被 .gitignore 忽略，不会提交到 GitHub。</p>
+            <p>Base URL 建议填写 OpenAI 兼容接口根路径，例如 <code>https://api.openai.com/v1</code>。</p>
+            <p>讲稿生成页会读取这里的配置；没有配置时，不应发起 AI 生成。</p>
           </div>
         </article>
       </section>
