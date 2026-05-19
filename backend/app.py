@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import threading
@@ -17,8 +18,10 @@ from urllib import error as url_error
 from urllib import request as url_request
 
 import edge_tts
+import certifi
 from flask import Flask, jsonify, request, send_file
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import HTTPException
 
 from ppt_to_video import estimate_chars, extract_notes, extract_slide_texts, write_notes_copy
 
@@ -34,6 +37,16 @@ JOB_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__)
 jobs: dict[str, dict] = {}
 server_logs: deque[dict] = deque(maxlen=300)
+
+
+@app.errorhandler(Exception)
+def handle_exception(exc: Exception):
+    if isinstance(exc, HTTPException):
+        return exc
+    append_server_log(f"未处理异常：{exc}", "error")
+    if request.path.startswith("/api/"):
+        return jsonify({"error": str(exc)}), 500
+    raise exc
 
 
 def default_settings() -> dict:
@@ -94,17 +107,32 @@ def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> s
         },
         method="POST",
     )
-    with url_request.urlopen(req, timeout=120) as resp:
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     return payload["choices"][0]["message"]["content"].strip()
 
 
-def script_prompt(strategy: str, style: str, slide_no: int, slide_text: str, note: str) -> list[dict]:
+def script_prompt(
+    strategy: str,
+    style: str,
+    enrichment: str,
+    slide_no: int,
+    slide_text: str,
+    note: str,
+    target_chars: int | None = None,
+) -> list[dict]:
     strategy_desc = {
         "short": "只在原备注过短时扩写；如果原备注已经完整，可以在保留其结构的基础上润色。",
         "rewrite": "重写本页完整讲解词，保持培训讲师口吻。",
         "duration": "生成更充分的讲解词，适合拉长整体视频时长，但不要空泛重复。",
     }.get(strategy, "生成清晰、自然的中文讲解词。")
+    enrichment_desc = {
+        "strict": "严格基于 PPT 页面文字和原备注，只做整理、润色和必要衔接，不增加背景信息。",
+        "light": "只基于 PPT 内容，允许少量背景解释和教学化表达，但不得引入无法从页面推断的事实。",
+        "teaching": "在事实边界内做教学化展开，补充原因、注意点、操作含义和听众容易理解的解释。",
+        "transition": "强化页内和上下页之间的过渡串联，让讲解更连贯，但不得编造具体事实。",
+    }.get(enrichment, "只基于 PPT 内容，允许少量背景解释。")
     return [
         {
             "role": "system",
@@ -120,6 +148,8 @@ def script_prompt(strategy: str, style: str, slide_no: int, slide_text: str, not
                 f"页面序号：第 {slide_no} 页\n"
                 f"生成策略：{strategy_desc}\n"
                 f"讲解风格：{style}\n\n"
+                f"补充程度：{enrichment_desc}\n"
+                f"{f'本页建议讲稿长度：约 {target_chars} 个中文字符。' if target_chars else ''}\n\n"
                 f"【PPT 页面文字】\n{slide_text or '（本页未提取到页面文字）'}\n\n"
                 f"【原备注】\n{note or '（本页暂无原备注）'}\n\n"
                 "请生成一段自然、稳妥、适合中文配音朗读的本页讲解词。"
@@ -216,43 +246,57 @@ def script_analyze():
 
 @app.post("/api/script/generate")
 def script_generate():
-    payload = request.get_json(force=True)
-    src = UPLOAD_DIR / payload["upload_id"]
-    if not src.exists():
-        return jsonify({"error": "上传文件不存在"}), 404
+    try:
+        payload = request.get_json(force=True)
+        src = UPLOAD_DIR / payload["upload_id"]
+        if not src.exists():
+            return jsonify({"error": "上传文件不存在"}), 404
 
-    settings = load_settings()
-    strategy = payload.get("strategy", "short")
-    style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
-    write_to_ppt = bool(payload.get("write_to_ppt"))
-    slide_texts = extract_slide_texts(src)
-    notes = extract_notes(src)
-    scripts = []
-    for idx, slide_text in enumerate(slide_texts, start=1):
-        note = notes[idx - 1] if idx - 1 < len(notes) else ""
-        if strategy == "short" and len(re.sub(r"\s+", "", note)) >= 180:
-            script = note
-        else:
-            script = ai_chat(settings, script_prompt(strategy, style, idx, slide_text, note))
-        scripts.append(script)
-        append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
+        settings = load_settings()
+        strategy = payload.get("strategy", "short")
+        style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
+        enrichment = payload.get("enrichment", "light")
+        write_to_ppt = bool(payload.get("write_to_ppt"))
+        short_threshold = int(payload.get("short_threshold") or 180)
+        target_minutes = float(payload.get("target_minutes") or 40)
+        slide_texts = extract_slide_texts(src)
+        notes = extract_notes(src)
+        target_chars_per_slide = None
+        if strategy == "duration" and slide_texts:
+            target_chars_per_slide = max(80, int(target_minutes * 264 / len(slide_texts)))
 
-    output_name = None
-    write_result = None
-    if write_to_ppt:
-        output_path = JOB_DIR / f"{src.stem}_已生成讲稿.pptx"
-        write_result = write_notes_copy(src, scripts, output_path)
-        output_name = output_path.name
-        append_server_log(f"已生成更新备注后的 PPT：{output_name}")
+        scripts = []
+        for idx, slide_text in enumerate(slide_texts, start=1):
+            note = notes[idx - 1] if idx - 1 < len(notes) else ""
+            if strategy == "short" and len(re.sub(r"\s+", "", note)) >= short_threshold:
+                script = note
+            else:
+                script = ai_chat(
+                    settings,
+                    script_prompt(strategy, style, enrichment, idx, slide_text, note, target_chars_per_slide),
+                )
+            scripts.append(script)
+            append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
 
-    return jsonify({
-        "scripts": [
-            {"index": idx, "title": (slide_texts[idx - 1].splitlines() or [f'第 {idx} 页'])[0], "script": script}
-            for idx, script in enumerate(scripts, start=1)
-        ],
-        "ppt_output": output_name,
-        "write_result": write_result,
-    })
+        output_name = None
+        write_result = None
+        if write_to_ppt:
+            output_path = JOB_DIR / f"{src.stem}_已生成讲稿.pptx"
+            write_result = write_notes_copy(src, scripts, output_path)
+            output_name = output_path.name
+            append_server_log(f"已生成更新备注后的 PPT：{output_name}")
+
+        return jsonify({
+            "scripts": [
+                {"index": idx, "title": (slide_texts[idx - 1].splitlines() or [f'第 {idx} 页'])[0], "script": script}
+                for idx, script in enumerate(scripts, start=1)
+            ],
+            "ppt_output": output_name,
+            "write_result": write_result,
+        })
+    except Exception as exc:
+        append_server_log(f"讲稿生成失败：{exc}", "error")
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.post("/api/preview")
