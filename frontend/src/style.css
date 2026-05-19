@@ -22,6 +22,12 @@
 
 * { box-sizing: border-box; }
 
+html,
+body,
+#app {
+  min-height: 100%;
+}
+
 body {
   margin: 0;
   min-width: 320px;
@@ -60,7 +66,7 @@ button {
 .page {
   width: min(1200px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 24px 0 42px;
+  padding: 24px 0;
 }
 
 .top-navigation {
@@ -563,20 +569,52 @@ input:focus {
 }
 
 .script-layout {
+  isolation: isolate;
   display: grid;
   grid-template-columns: 1.05fr .95fr;
   gap: 20px;
+}
+
+.script-upload {
+  position: relative;
+  z-index: 2;
+}
+
+.script-style {
+  position: relative;
+  z-index: 1;
 }
 
 .script-preview {
   grid-column: 1 / -1;
 }
 
+.script-control-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.script-analyze-block {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+}
+
+.script-local-message {
+  margin: 0;
+  color: var(--accent-deep);
+  font-size: 14px;
+}
+
 .script-strategy-actions {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
-  margin-top: 16px;
+  justify-content: flex-end;
 }
 
 .strategy-pill {
@@ -624,6 +662,23 @@ input:focus {
   opacity: 1;
 }
 
+.strategy-popover {
+  position: absolute;
+  right: 196px;
+  bottom: calc(100% + 12px);
+  z-index: 30;
+  width: 230px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--white);
+  box-shadow: var(--shadow-card);
+  padding: 12px;
+}
+
+.duration-popover {
+  right: 0;
+}
+
 .script-pages {
   display: grid;
 }
@@ -667,6 +722,30 @@ input:focus {
   line-height: 1.6;
 }
 
+.select-summary {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.select-summary strong,
+.select-option-detail strong {
+  display: block;
+  font-weight: 500;
+}
+
+.select-summary span,
+.select-option-detail small {
+  display: block;
+  color: var(--ink-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.select-option-detail {
+  align-items: flex-start;
+}
+
 .inline-download {
   margin-top: 0;
 }
@@ -691,6 +770,28 @@ input:focus {
   display: flex;
   gap: 12px;
   margin-top: 20px;
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.checkbox-field > input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.checkbox-field > span {
+  display: inline;
+  margin-bottom: 0;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.4;
 }
 
 .settings-message {

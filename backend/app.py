@@ -54,6 +54,7 @@ def default_settings() -> dict:
         "ai_base_url": "",
         "ai_api_key": "",
         "ai_model": "",
+        "ai_verify_ssl": True,
         "default_script_style": "培训讲师 · 稳妥清晰",
     }
 
@@ -81,15 +82,30 @@ def public_settings(settings: dict) -> dict:
     return {
         "ai_base_url": settings.get("ai_base_url", ""),
         "ai_model": settings.get("ai_model", ""),
+        "ai_verify_ssl": settings.get("ai_verify_ssl", True),
         "default_script_style": settings.get("default_script_style", ""),
         "has_api_key": bool(settings.get("ai_api_key")),
     }
+
+
+def build_ssl_context(verify_ssl: bool = True) -> ssl.SSLContext:
+    if not verify_ssl:
+        return ssl._create_unverified_context()
+
+    # Prefer the system trust store and add certifi as a supplemental CA bundle.
+    ssl_context = ssl.create_default_context()
+    try:
+        ssl_context.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        pass
+    return ssl_context
 
 
 def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> str:
     base_url = settings.get("ai_base_url", "").strip().rstrip("/")
     api_key = settings.get("ai_api_key", "").strip()
     model = settings.get("ai_model", "").strip()
+    verify_ssl = bool(settings.get("ai_verify_ssl", True))
     if not base_url or not api_key or not model:
         raise ValueError("请先在设置页填写 Base URL、API Key 和 Model。")
 
@@ -107,7 +123,7 @@ def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> s
         },
         method="POST",
     )
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    ssl_context = build_ssl_context(verify_ssl=verify_ssl)
     with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
     return payload["choices"][0]["message"]["content"].strip()
@@ -172,6 +188,76 @@ def append_server_log(text: str, level: str = "info"):
         "text": text,
         "level": level,
     })
+
+
+def generate_scripts_payload(src: Path, payload: dict) -> dict:
+    settings = load_settings()
+    strategy = payload.get("strategy", "short")
+    style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
+    enrichment = payload.get("enrichment", "light")
+    write_to_ppt = bool(payload.get("write_to_ppt"))
+    short_threshold = int(payload.get("short_threshold") or 180)
+    target_minutes = float(payload.get("target_minutes") or 40)
+    slide_texts = extract_slide_texts(src)
+    notes = extract_notes(src)
+    target_chars_per_slide = None
+    if strategy == "duration" and slide_texts:
+        target_chars_per_slide = max(80, int(target_minutes * 264 / len(slide_texts)))
+
+    scripts = []
+    for idx, slide_text in enumerate(slide_texts, start=1):
+        note = notes[idx - 1] if idx - 1 < len(notes) else ""
+        if strategy == "short" and len(re.sub(r"\s+", "", note)) >= short_threshold:
+            script = note
+        else:
+            script = ai_chat(
+                settings,
+                script_prompt(strategy, style, enrichment, idx, slide_text, note, target_chars_per_slide),
+            )
+        scripts.append(script)
+        append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
+
+    output_name = None
+    write_result = None
+    if write_to_ppt:
+        output_path = JOB_DIR / f"{src.stem}_已生成讲稿.pptx"
+        write_result = write_notes_copy(src, scripts, output_path)
+        output_name = output_path.name
+        append_server_log(f"已生成更新备注后的 PPT：{output_name}")
+
+    return {
+        "scripts": [
+            {"index": idx, "title": (slide_texts[idx - 1].splitlines() or [f'第 {idx} 页'])[0], "script": script}
+            for idx, script in enumerate(scripts, start=1)
+        ],
+        "ppt_output": output_name,
+        "write_result": write_result,
+    }
+
+
+def run_script_job(job_id: str, src: Path, payload: dict):
+    job = jobs[job_id]
+    job["status"] = "running"
+    append_log(job, "讲稿生成任务已启动。")
+    append_server_log(f"讲稿任务 {job_id} 已启动。")
+    try:
+        slide_count = len(extract_slide_texts(src))
+        if slide_count:
+            append_log(job, f"已识别 {slide_count} 页，开始逐页生成讲稿。")
+        result = generate_scripts_payload(src, payload)
+        result_count = len(result.get("scripts", []))
+        for idx in range(result_count):
+            append_log(job, f"已生成第 {idx + 1}/{result_count} 页讲稿。")
+        if result.get("ppt_output"):
+            append_log(job, "已写入新的 PPT 副本。", "完成")
+        job["result"] = result
+        job["status"] = "done"
+        append_log(job, "讲稿生成完成。", "完成")
+        append_server_log(f"讲稿任务 {job_id} 已完成。")
+    except Exception as exc:
+        job["status"] = "error"
+        append_log(job, f"讲稿生成失败：{exc}", "失败")
+        append_server_log(f"讲稿生成失败：{exc}", "error")
 
 
 async def chinese_voices() -> list[dict]:
@@ -251,49 +337,11 @@ def script_generate():
         src = UPLOAD_DIR / payload["upload_id"]
         if not src.exists():
             return jsonify({"error": "上传文件不存在"}), 404
-
-        settings = load_settings()
-        strategy = payload.get("strategy", "short")
-        style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
-        enrichment = payload.get("enrichment", "light")
-        write_to_ppt = bool(payload.get("write_to_ppt"))
-        short_threshold = int(payload.get("short_threshold") or 180)
-        target_minutes = float(payload.get("target_minutes") or 40)
-        slide_texts = extract_slide_texts(src)
-        notes = extract_notes(src)
-        target_chars_per_slide = None
-        if strategy == "duration" and slide_texts:
-            target_chars_per_slide = max(80, int(target_minutes * 264 / len(slide_texts)))
-
-        scripts = []
-        for idx, slide_text in enumerate(slide_texts, start=1):
-            note = notes[idx - 1] if idx - 1 < len(notes) else ""
-            if strategy == "short" and len(re.sub(r"\s+", "", note)) >= short_threshold:
-                script = note
-            else:
-                script = ai_chat(
-                    settings,
-                    script_prompt(strategy, style, enrichment, idx, slide_text, note, target_chars_per_slide),
-                )
-            scripts.append(script)
-            append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
-
-        output_name = None
-        write_result = None
-        if write_to_ppt:
-            output_path = JOB_DIR / f"{src.stem}_已生成讲稿.pptx"
-            write_result = write_notes_copy(src, scripts, output_path)
-            output_name = output_path.name
-            append_server_log(f"已生成更新备注后的 PPT：{output_name}")
-
-        return jsonify({
-            "scripts": [
-                {"index": idx, "title": (slide_texts[idx - 1].splitlines() or [f'第 {idx} 页'])[0], "script": script}
-                for idx, script in enumerate(scripts, start=1)
-            ],
-            "ppt_output": output_name,
-            "write_result": write_result,
-        })
+        job_id = uuid.uuid4().hex[:10]
+        jobs[job_id] = {"status": "queued", "logs": [], "kind": "script"}
+        thread = threading.Thread(target=run_script_job, args=(job_id, src, payload), daemon=True)
+        thread.start()
+        return jsonify({"job_id": job_id})
     except Exception as exc:
         append_server_log(f"讲稿生成失败：{exc}", "error")
         return jsonify({"error": str(exc)}), 500
@@ -425,6 +473,7 @@ def update_settings():
         "ai_base_url": payload.get("ai_base_url", "").strip().rstrip("/"),
         "ai_api_key": payload.get("ai_api_key", "").strip(),
         "ai_model": payload.get("ai_model", "").strip(),
+        "ai_verify_ssl": bool(payload.get("ai_verify_ssl", True)),
         "default_script_style": payload.get("default_script_style", "").strip(),
     })
     append_server_log("AI 设置已保存。")

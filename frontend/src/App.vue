@@ -31,6 +31,7 @@ const settings = ref({
   ai_base_url: '',
   ai_api_key: '',
   ai_model: '',
+  ai_verify_ssl: true,
   default_script_style: '培训讲师 · 稳妥清晰',
   has_api_key: false,
 })
@@ -44,11 +45,20 @@ const scriptFileInput = ref(null)
 const scriptUploadId = ref('')
 const scriptSlides = ref([])
 const generatedScripts = ref([])
+const scriptLogs = ref([])
 const scriptStrategy = ref('short')
 const scriptStyle = ref('培训讲师 · 稳妥清晰')
+const scriptEnrichment = ref('light')
+const enrichmentOpen = ref(false)
+const activeStrategyPopover = ref('')
+const shortNoteThreshold = ref(180)
+const scriptTargetMinutes = ref(40)
 const isScriptAnalyzing = ref(false)
 const isScriptGenerating = ref(false)
-const scriptMessage = ref('')
+const scriptJobId = ref('')
+const scriptJobStatus = ref('')
+const scriptAnalyzeMessage = ref('')
+const scriptGenerateMessage = ref('')
 const scriptPptDownloadUrl = ref('')
 
 const voices = ref([])
@@ -58,7 +68,27 @@ const rates = [
   { label: '标准', value: '+0%' },
   { label: '偏快', value: '+10%' },
 ]
+const enrichmentOptions = [
+  { label: '严格基于原文', value: 'strict', hint: '只整理页面和原备注，不主动增加背景。' },
+  { label: '少量背景解释', value: 'light', hint: '保留事实边界，补一点必要说明。' },
+  { label: '教学化展开', value: 'teaching', hint: '增加讲解层次、原因和注意点。' },
+  { label: '过渡串联', value: 'transition', hint: '强化上下文衔接，让口播更连贯。' },
+]
 const logs = ref([])
+
+async function readJson(response) {
+  const text = await response.text()
+  let data
+  try {
+    data = text ? JSON.parse(text) : {}
+  } catch {
+    throw new Error('接口没有返回 JSON，请确认前端通过 npm run dev 启动，并且后端服务正在运行。')
+  }
+  if (!response.ok) {
+    throw new Error(data.error || data.message || `请求失败：HTTP ${response.status}`)
+  }
+  return data
+}
 
 function onFileChange(event) {
   setFile(event.target.files?.[0])
@@ -111,33 +141,59 @@ function setScriptFile(file) {
   scriptUploadId.value = ''
   scriptSlides.value = []
   generatedScripts.value = []
+  scriptLogs.value = []
+  scriptJobId.value = ''
+  scriptJobStatus.value = ''
   scriptPptDownloadUrl.value = ''
-  scriptMessage.value = ''
+  scriptAnalyzeMessage.value = ''
+  scriptGenerateMessage.value = ''
 }
 
 function onScriptFileChange(event) {
   setScriptFile(event.target.files?.[0])
 }
 
+function onScriptDrop(event) {
+  isDragging.value = false
+  setScriptFile(event.dataTransfer.files?.[0])
+}
+
 async function analyzeScriptPpt() {
   if (!scriptFile.value) {
-    scriptMessage.value = '请先上传 PPTX。'
+    scriptAnalyzeMessage.value = '请先上传 PPTX。'
     return
   }
   isScriptAnalyzing.value = true
-  scriptMessage.value = '正在分析 PPT 页面内容与原备注。'
+  scriptAnalyzeMessage.value = '正在分析 PPT 页面内容与原备注。'
+  scriptGenerateMessage.value = ''
   const formData = new FormData()
   formData.append('pptx', scriptFile.value)
   try {
-    const data = await fetch('/api/script/analyze', { method: 'POST', body: formData }).then((r) => r.json())
+    const data = await fetch('/api/script/analyze', { method: 'POST', body: formData }).then(readJson)
     scriptUploadId.value = data.upload_id
     scriptSlides.value = data.slides
-    scriptMessage.value = `分析完成：共 ${data.slide_count} 页。`
+    scriptAnalyzeMessage.value = `分析完成：共 ${data.slide_count} 页。`
   } catch {
-    scriptMessage.value = '分析失败，请确认后端已启动。'
+    scriptAnalyzeMessage.value = '分析失败，请确认后端已启动。'
   } finally {
     isScriptAnalyzing.value = false
   }
+}
+
+function estimateScriptDuration() {
+  const generatedText = generatedScripts.value.map((item) => item.script).join('')
+  const sourceText = generatedText || scriptSlides.value.map((item) => item.note || '').join('')
+  const chars = sourceText.replace(/\s+/g, '').length
+  if (!chars) {
+    scriptGenerateMessage.value = scriptSlides.value.length
+      ? '当前 PPT 原备注为空或过短，请先生成讲稿后再预估。'
+      : '请先分析课件，或生成讲稿后再预估。'
+    return
+  }
+  const minutes = chars / 264
+  scriptGenerateMessage.value = generatedText
+    ? `当前生成讲稿约 ${chars} 字，预计朗读 ${minutes.toFixed(1)} 分钟。`
+    : `当前原备注约 ${chars} 字，预计朗读 ${minutes.toFixed(1)} 分钟；生成讲稿后可重新预估。`
 }
 
 async function generateScripts() {
@@ -146,7 +202,9 @@ async function generateScripts() {
     if (!scriptUploadId.value) return
   }
   isScriptGenerating.value = true
-  scriptMessage.value = '正在调用 AI 生成讲稿，请稍候。'
+  generatedScripts.value = []
+  scriptLogs.value = []
+  scriptGenerateMessage.value = '已创建讲稿生成任务，正在等待开始。'
   scriptPptDownloadUrl.value = ''
   try {
     const data = await fetch('/api/script/generate', {
@@ -156,23 +214,54 @@ async function generateScripts() {
         upload_id: scriptUploadId.value,
         strategy: scriptStrategy.value,
         style: scriptStyle.value,
+        enrichment: scriptEnrichment.value,
+        short_threshold: Number(shortNoteThreshold.value) || 180,
+        target_minutes: Number(scriptTargetMinutes.value) || 40,
         write_to_ppt: writeScriptToPpt.value,
       }),
-    }).then(async (r) => {
-      const body = await r.json()
-      if (!r.ok) throw new Error(body.error || body.message || '生成失败')
-      return body
-    })
-    generatedScripts.value = data.scripts
-    if (data.ppt_output) {
-      scriptPptDownloadUrl.value = `/api/download/${data.ppt_output}`
-    }
-    scriptMessage.value = `讲稿生成完成，共 ${data.scripts.length} 页。`
+    }).then(readJson)
+    scriptJobId.value = data.job_id
+    scriptGenerateMessage.value = '讲稿生成任务已启动，正在逐页调用 AI。'
+    pollScriptJob()
   } catch (error) {
-    scriptMessage.value = error.message || '讲稿生成失败，请检查 AI 设置。'
-  } finally {
+    scriptGenerateMessage.value = error.message || '讲稿生成失败，请检查 AI 设置。'
     isScriptGenerating.value = false
   }
+}
+
+async function pollScriptJob() {
+  const timer = setInterval(async () => {
+    try {
+      const data = await fetch(`/api/jobs/${scriptJobId.value}`).then(readJson)
+      scriptJobStatus.value = data.status
+      if (data.logs) {
+        scriptLogs.value = [...data.logs].reverse()
+        const latest = data.logs[data.logs.length - 1]
+        if (latest?.text) {
+          scriptGenerateMessage.value = latest.text
+        }
+      }
+      if (data.status === 'done') {
+        clearInterval(timer)
+        isScriptGenerating.value = false
+        generatedScripts.value = data.result?.scripts || []
+        if (data.result?.ppt_output) {
+          scriptPptDownloadUrl.value = `/api/download/${data.result.ppt_output}`
+        }
+        scriptGenerateMessage.value = `讲稿生成完成，共 ${generatedScripts.value.length} 页。`
+      }
+      if (data.status === 'error') {
+        clearInterval(timer)
+        isScriptGenerating.value = false
+        const latest = data.logs?.[data.logs.length - 1]
+        scriptGenerateMessage.value = latest?.text || '讲稿生成失败，请查看日志。'
+      }
+    } catch (error) {
+      clearInterval(timer)
+      isScriptGenerating.value = false
+      scriptGenerateMessage.value = error.message || '读取讲稿任务状态失败。'
+    }
+  }, 1500)
 }
 
 async function loadVoices() {
@@ -190,6 +279,10 @@ function voiceLabel(id) {
 
 function rateLabel(value) {
   return rates.find((item) => item.value === value)?.label || value
+}
+
+function enrichmentOption(value) {
+  return enrichmentOptions.find((item) => item.value === value) || enrichmentOptions[1]
 }
 
 async function analyzeFile() {
@@ -335,7 +428,7 @@ async function loadServerLogs() {
 
 async function loadSettings() {
   try {
-    const data = await fetch('/api/settings').then((r) => r.json())
+    const data = await fetch('/api/settings').then(readJson)
     settings.value = {
       ...settings.value,
       ...data,
@@ -355,11 +448,11 @@ async function saveAISettings() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings.value),
-    }).then((r) => r.json())
+    }).then(readJson)
     settings.value = { ...settings.value, ...data, ai_api_key: '' }
     settingsMessage.value = '设置已保存。'
-  } catch {
-    settingsMessage.value = '保存失败，请确认后端已启动。'
+  } catch (error) {
+    settingsMessage.value = error.message || '保存失败，请确认后端已启动。'
   } finally {
     isSavingSettings.value = false
   }
@@ -369,15 +462,14 @@ async function testAIConnection() {
   isTestingAI.value = true
   settingsMessage.value = ''
   try {
-    const response = await fetch('/api/settings/test-ai', {
+    const data = await fetch('/api/settings/test-ai', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings.value),
-    })
-    const data = await response.json()
+    }).then(readJson)
     settingsMessage.value = data.message
-  } catch {
-    settingsMessage.value = '测试失败，请确认后端已启动。'
+  } catch (error) {
+    settingsMessage.value = error.message || '测试失败，请确认后端已启动。'
   } finally {
     isTestingAI.value = false
   }
@@ -678,31 +770,71 @@ watch(activeTab, (value) => {
       <section class="script-layout">
         <article class="card script-upload">
           <h2>上传课件</h2>
-          <label class="dropzone batch-dropzone">
+          <label
+            class="dropzone batch-dropzone"
+            :class="{ dragging: isDragging }"
+            @dragenter.prevent="isDragging = true"
+            @dragover.prevent="isDragging = true"
+            @dragleave.prevent="isDragging = false"
+            @drop.prevent="onScriptDrop"
+          >
             <input ref="scriptFileInput" type="file" accept=".pptx" @change="onScriptFileChange" />
             <FileUp :size="22" />
             <strong>上传需要生成讲稿的 PPTX</strong>
             <span>{{ scriptFileName }}</span>
           </label>
-          <div class="script-strategy-actions">
-            <button class="strategy-pill" :class="{ active: scriptStrategy === 'short' }" @click="scriptStrategy = 'short'">
-              只补短备注
-              <span>备注过短的页面才扩写，适合已有基础讲稿的 PPT。</span>
-            </button>
-            <button class="strategy-pill" :class="{ active: scriptStrategy === 'rewrite' }" @click="scriptStrategy = 'rewrite'">
-              全部重写
-              <span>按统一讲师风格重写每页讲解词。</span>
-            </button>
-            <button class="strategy-pill" :class="{ active: scriptStrategy === 'duration' }" @click="scriptStrategy = 'duration'">
-              按目标时长生成
-              <span>根据期望总时长分配每页字数，比硬加停顿更自然。</span>
-            </button>
-          </div>
-          <div class="upload-actions">
-            <button class="utility" @click="analyzeScriptPpt">
-              <LoaderCircle v-if="isScriptAnalyzing" :size="16" class="spin" />
-              {{ isScriptAnalyzing ? '分析中' : '分析课件' }}
-            </button>
+          <div class="script-control-row">
+            <div class="script-analyze-block">
+              <button class="utility" @click="analyzeScriptPpt">
+                <LoaderCircle v-if="isScriptAnalyzing" :size="16" class="spin" />
+                {{ isScriptAnalyzing ? '分析中' : '分析课件' }}
+              </button>
+              <p v-if="scriptAnalyzeMessage" class="script-local-message">{{ scriptAnalyzeMessage }}</p>
+            </div>
+            <div class="script-strategy-actions">
+              <button
+                class="strategy-pill"
+                :class="{ active: scriptStrategy === 'short' }"
+                @click="scriptStrategy = 'short'; activeStrategyPopover = activeStrategyPopover === 'short' ? '' : 'short'"
+              >
+                只补短备注
+                <span>备注过短的页面才扩写，适合已有基础讲稿的 PPT。</span>
+              </button>
+              <button
+                class="strategy-pill"
+                :class="{ active: scriptStrategy === 'rewrite' }"
+                @click="scriptStrategy = 'rewrite'; activeStrategyPopover = ''"
+              >
+                全部重写
+                <span>按统一讲师风格重写每页讲解词。</span>
+              </button>
+              <button
+                class="strategy-pill"
+                :class="{ active: scriptStrategy === 'duration' }"
+                @click="scriptStrategy = 'duration'; activeStrategyPopover = activeStrategyPopover === 'duration' ? '' : 'duration'"
+              >
+                按目标时长生成
+                <span>根据期望总时长分配每页字数，比硬加停顿更自然。</span>
+              </button>
+              <div v-if="activeStrategyPopover === 'short'" class="strategy-popover">
+                <label>
+                  <span>短备注阈值</span>
+                  <div class="duration-input">
+                    <input v-model="shortNoteThreshold" type="number" min="1" step="10" />
+                    <span>字</span>
+                  </div>
+                </label>
+              </div>
+              <div v-if="activeStrategyPopover === 'duration'" class="strategy-popover duration-popover">
+                <label>
+                  <span>目标讲稿总时长</span>
+                  <div class="duration-input">
+                    <input v-model="scriptTargetMinutes" type="number" min="1" step="1" />
+                    <span>分钟</span>
+                  </div>
+                </label>
+              </div>
+            </div>
           </div>
         </article>
 
@@ -719,7 +851,30 @@ watch(activeTab, (value) => {
             </label>
             <label>
               <span>补充程度</span>
-              <div class="batch-policy">只基于 PPT 内容，允许少量背景解释</div>
+              <div class="select">
+                <button class="select-trigger" @click="enrichmentOpen = !enrichmentOpen">
+                  <span class="select-summary">
+                    <strong>{{ enrichmentOption(scriptEnrichment).label }}</strong>
+                    <span>{{ enrichmentOption(scriptEnrichment).hint }}</span>
+                  </span>
+                  <ChevronDown :size="18" />
+                </button>
+                <div v-if="enrichmentOpen" class="select-menu">
+                  <button
+                    v-for="option in enrichmentOptions"
+                    :key="option.value"
+                    class="select-option select-option-detail"
+                    :class="{ active: scriptEnrichment === option.value }"
+                    @click="scriptEnrichment = option.value; enrichmentOpen = false"
+                  >
+                    <Check v-if="option.value === scriptEnrichment" :size="16" />
+                    <span>
+                      <strong>{{ option.label }}</strong>
+                      <small>{{ option.hint }}</small>
+                    </span>
+                  </button>
+                </div>
+              </div>
             </label>
           </div>
           <label class="writeback-option">
@@ -735,20 +890,34 @@ watch(activeTab, (value) => {
               <LoaderCircle v-if="isScriptGenerating" :size="16" class="spin" />
               {{ isScriptGenerating ? '生成中' : '生成讲稿' }}
             </button>
-            <button class="secondary">预估讲稿时长</button>
+            <button class="secondary" @click="estimateScriptDuration">预估讲稿时长</button>
             <a v-if="scriptPptDownloadUrl" class="download inline-download" :href="scriptPptDownloadUrl">
               <Download :size="16" />
               下载 PPT
             </a>
           </div>
-          <p v-if="scriptMessage" class="settings-message">{{ scriptMessage }}</p>
+          <p v-if="scriptGenerateMessage" class="settings-message">{{ scriptGenerateMessage }}</p>
+          <div class="server-log-panel">
+            <div class="inline-log-head">
+              <strong>讲稿生成日志</strong>
+            </div>
+            <div class="server-log-list">
+              <div v-if="!scriptLogs.length" class="empty-log">
+                {{ isScriptGenerating ? '任务已创建，等待返回首条进度日志。' : '尚未开始讲稿生成任务。' }}
+              </div>
+              <div v-for="item in scriptLogs" :key="item.time + item.text" class="server-log-item">
+                <span>{{ item.time }}</span>
+                <pre :class="{ error: item.state === '失败' }">{{ item.text }}</pre>
+              </div>
+            </div>
+          </div>
         </article>
 
         <article class="card script-preview">
           <div class="section-head">
             <div class="section-title">
-              <h2>讲稿预览</h2>
-              <span>逐页确认后，可进入视频生成</span>
+              <h2>逐页讲稿结果</h2>
+              <span>这里显示每一页最终生成的讲稿内容</span>
             </div>
             <div class="section-tools">
               <button class="utility compact">保存为备注</button>
@@ -757,7 +926,7 @@ watch(activeTab, (value) => {
           </div>
           <div class="script-pages">
             <div v-if="!generatedScripts.length" class="empty-log">
-              {{ scriptSlides.length ? '已分析课件，等待生成讲稿。' : '上传并分析 PPT 后，这里会显示逐页讲稿。' }}
+              {{ scriptSlides.length ? '课件已分析完成；生成讲稿后，这里会显示逐页结果。' : '上传并分析 PPT 后，这里会显示逐页讲稿结果。' }}
             </div>
             <div v-for="item in generatedScripts" :key="item.index" class="script-page">
               <div>
@@ -797,6 +966,10 @@ watch(activeTab, (value) => {
               <span>Model</span>
               <input v-model="settings.ai_model" placeholder="gpt-4.1-mini" />
             </label>
+            <label class="checkbox-field">
+              <input v-model="settings.ai_verify_ssl" type="checkbox" />
+              <span>校验 SSL 证书</span>
+            </label>
             <label>
               <span>默认讲解风格</span>
               <input v-model="settings.default_script_style" />
@@ -819,6 +992,7 @@ watch(activeTab, (value) => {
             <p>API Key 会保存在本机 <code>backend/storage/settings.json</code></p>
             <p>Base URL 建议填写 OpenAI 兼容接口根路径</p>
             <p>例如 <code>https://api.openai.com/v1</code>。</p>
+            <p>如果你使用的是自签名证书、公司网关或中转服务，可先关闭“校验 SSL 证书”再测试。</p>
             <p>讲稿生成页会读取这里的配置；没有配置时，不应发起 AI 生成。</p>
           </div>
         </article>
