@@ -122,6 +122,12 @@ const batchPollers = new Map()
 let settingsMessageTimer = null
 let subtitleSettingsMessageTimer = null
 
+function downloadLink(filename, downloadName = '') {
+  if (!filename) return ''
+  const query = downloadName ? `?name=${encodeURIComponent(downloadName)}` : ''
+  return `/api/download/${encodeURIComponent(filename)}${query}`
+}
+
 function formatTokenCount(value) {
   const amount = Number(value || 0)
   if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(2)}M`
@@ -246,7 +252,9 @@ function createBatchItem(file) {
     latestLog: '等待上传',
     logs: [],
     output: '',
+    outputDownloadName: '',
     pptOutput: '',
+    pptDownloadName: '',
     estimatedMinutes: null,
     resultKind: '',
     error: '',
@@ -370,7 +378,9 @@ async function startBatchItem(item, options = {}) {
   }
   item.error = ''
   item.output = ''
+  item.outputDownloadName = ''
   item.pptOutput = ''
+  item.pptDownloadName = ''
   item.resultKind = batchMode.value
   const ready = await analyzeBatchItem(item)
   if (!ready) {
@@ -446,12 +456,14 @@ function startBatchPolling(item) {
         item.statusTone = 'done'
         if (item.resultKind === 'script') {
           item.pptOutput = data.result?.ppt_output || ''
+          item.pptDownloadName = data.result?.ppt_download_name || item.name
           item.estimatedMinutes = data.result?.estimated_minutes ?? null
           item.latestLog = data.result?.expansion_applied
             ? '讲稿生成完成，已自动补写一轮。'
             : '讲稿生成完成，可以下载 PPT。'
         } else {
           item.output = data.output
+          item.outputDownloadName = data.output_download_name || item.name.replace(/\.pptx$/i, '.mp4')
           item.latestLog = '视频生成完成，可以下载。'
         }
         item.logs = [
@@ -544,7 +556,8 @@ async function stopAllBatchItems() {
 
 function batchOutputUrl(item) {
   const filename = item.resultKind === 'script' ? item.pptOutput : item.output
-  return filename ? `/api/download/${filename}` : ''
+  const downloadName = item.resultKind === 'script' ? item.pptDownloadName : item.outputDownloadName
+  return downloadLink(filename, downloadName)
 }
 
 function setScriptFile(file) {
@@ -659,7 +672,7 @@ async function pollScriptJob() {
         isScriptGenerating.value = false
         generatedScripts.value = data.result?.scripts || []
         if (data.result?.ppt_output) {
-          scriptPptDownloadUrl.value = `/api/download/${data.result.ppt_output}`
+          scriptPptDownloadUrl.value = downloadLink(data.result.ppt_output, data.result.ppt_download_name || scriptFileName.value)
         }
         const estimated = data.result?.estimated_minutes
         const expanded = data.result?.expansion_applied
@@ -820,7 +833,7 @@ async function pollJob() {
     if (data.status === 'done') {
       clearInterval(timer)
       isGenerating.value = false
-      downloadUrl.value = `/api/download/${data.output}`
+      downloadUrl.value = downloadLink(data.output, data.output_download_name || fileName.value.replace(/\.pptx$/i, '.mp4'))
       addLog('视频生成完成，可以下载。', '完成')
     }
     if (data.status === 'error') {

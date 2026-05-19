@@ -343,6 +343,45 @@ def append_server_log(text: str, level: str = "info"):
     })
 
 
+def client_filename(filename: str | None, fallback: str) -> str:
+    name = re.split(r"[\\/]", filename or "")[-1].strip()
+    return name or fallback
+
+
+def upload_meta_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.json")
+
+
+def save_upload_metadata(path: Path, original_name: str) -> None:
+    upload_meta_path(path).write_text(
+        json.dumps({"original_name": original_name}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_upload_original_name(path: Path) -> str:
+    meta_path = upload_meta_path(path)
+    if meta_path.exists():
+        try:
+            original_name = json.loads(meta_path.read_text(encoding="utf-8")).get("original_name", "")
+            if original_name:
+                return client_filename(original_name, path.name)
+        except Exception:
+            pass
+
+    # Backward-compatible fallback for uploads created before metadata existed.
+    match = re.match(r"^[0-9a-f]{32}-(.+)$", path.name)
+    return match.group(1) if match else path.name
+
+
+def download_name_for_upload(path: Path, suffix: str | None = None) -> str:
+    original_name = load_upload_original_name(path)
+    if suffix is None:
+        return original_name
+    stem = Path(original_name).stem or path.stem
+    return f"{stem}{suffix}"
+
+
 def generate_scripts_payload(src: Path, payload: dict) -> dict:
     settings = load_settings()
     strategy = payload.get("strategy", "short")
@@ -402,12 +441,14 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
             append_server_log(f"补写后预计讲稿时长约 {estimated_minutes:.1f} 分钟。")
 
     output_name = None
+    output_download_name = None
     write_result = None
     if write_to_ppt:
-        output_path = JOB_DIR / f"{src.stem}_已生成讲稿.pptx"
+        output_download_name = download_name_for_upload(src, ".pptx")
+        output_path = JOB_DIR / f"{uuid.uuid4().hex}.pptx"
         write_result = write_notes_copy(src, scripts, output_path)
         output_name = output_path.name
-        append_server_log(f"已生成更新备注后的 PPT：{output_name}")
+        append_server_log(f"已生成更新备注后的 PPT：{output_download_name}")
 
     return {
         "scripts": [
@@ -415,6 +456,7 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
             for idx, script in enumerate(scripts, start=1)
         ],
         "ppt_output": output_name,
+        "ppt_download_name": output_download_name,
         "write_result": write_result,
         "estimated_minutes": estimated_minutes,
         "expansion_applied": expansion_applied,
@@ -475,12 +517,15 @@ def analyze():
     file = request.files.get("pptx")
     if not file or not file.filename.lower().endswith(".pptx"):
         return jsonify({"error": "请上传 .pptx 文件"}), 400
-    safe_name = secure_filename(file.filename) or f"upload-{uuid.uuid4().hex}.pptx"
+    original_name = client_filename(file.filename, f"upload-{uuid.uuid4().hex}.pptx")
+    safe_name = secure_filename(original_name) or f"upload-{uuid.uuid4().hex}.pptx"
     path = UPLOAD_DIR / f"{uuid.uuid4().hex}-{safe_name}"
     file.save(path)
+    save_upload_metadata(path, original_name)
     notes = extract_notes(path)
     return jsonify({
         "upload_id": path.name,
+        "original_name": original_name,
         "slides": len(notes),
         "chars": estimate_chars(notes),
         "empty_notes": sum(1 for n in notes if not n.strip()),
@@ -492,9 +537,11 @@ def script_analyze():
     file = request.files.get("pptx")
     if not file or not file.filename.lower().endswith(".pptx"):
         return jsonify({"error": "请上传 .pptx 文件"}), 400
-    safe_name = secure_filename(file.filename) or f"upload-{uuid.uuid4().hex}.pptx"
+    original_name = client_filename(file.filename, f"upload-{uuid.uuid4().hex}.pptx")
+    safe_name = secure_filename(original_name) or f"upload-{uuid.uuid4().hex}.pptx"
     path = UPLOAD_DIR / f"{uuid.uuid4().hex}-{safe_name}"
     file.save(path)
+    save_upload_metadata(path, original_name)
     slide_texts = extract_slide_texts(path)
     notes = extract_notes(path)
     slides = []
@@ -510,6 +557,7 @@ def script_analyze():
         })
     return jsonify({
         "upload_id": path.name,
+        "original_name": original_name,
         "slides": slides,
         "slide_count": len(slides),
         "chars": estimate_chars(notes),
@@ -545,7 +593,7 @@ def preview():
 
 def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float, subtitle_style: str):
     job = jobs[job_id]
-    out = JOB_DIR / f"{src.stem}-{job_id}.mp4"
+    out = JOB_DIR / f"{uuid.uuid4().hex}.mp4"
     cmd = [
         sys.executable,
         str(BASE_DIR / "ppt_to_video.py"),
@@ -585,6 +633,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
     elif returncode == 0:
         job["status"] = "done"
         job["output"] = out.name
+        job["output_download_name"] = download_name_for_upload(src, ".mp4")
         append_log(job, "视频生成完成。", "完成")
         append_server_log(f"任务 {job_id} 已完成。")
     else:
@@ -719,8 +768,9 @@ def test_ai_settings():
 
 @app.get("/api/download/<filename>")
 def download(filename: str):
-    path = JOB_DIR / filename
-    return send_file(path, as_attachment=True)
+    path = JOB_DIR / Path(filename).name
+    download_name = request.args.get("name") or path.name
+    return send_file(path, as_attachment=True, download_name=download_name)
 
 
 if __name__ == "__main__":
