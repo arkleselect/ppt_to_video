@@ -527,6 +527,7 @@ def generate():
     if not src.exists():
         return jsonify({"error": "上传文件不存在"}), 404
     settings = load_settings()
+    subtitle_style = (payload.get("subtitle_style") or settings.get("subtitle_style") or "classic").strip()
     job_id = uuid.uuid4().hex[:10]
     jobs[job_id] = {"status": "queued", "logs": []}
     thread = threading.Thread(
@@ -537,7 +538,7 @@ def generate():
             payload["voice"],
             payload.get("rate", "-5%"),
             float(payload["target_minutes"]) if payload.get("target_minutes") is not None else None,
-            settings.get("subtitle_style", "classic"),
+            subtitle_style,
         ),
         daemon=True,
     )
@@ -580,14 +581,20 @@ def get_settings():
 @app.post("/api/settings")
 def update_settings():
     payload = request.get_json(force=True)
-    settings = save_settings({
-        "ai_base_url": payload.get("ai_base_url", "").strip().rstrip("/"),
-        "ai_api_key": payload.get("ai_api_key", "").strip(),
-        "ai_model": payload.get("ai_model", "").strip(),
-        "ai_verify_ssl": bool(payload.get("ai_verify_ssl", True)),
-        "default_script_style": payload.get("default_script_style", "").strip(),
-        "subtitle_style": payload.get("subtitle_style", "classic").strip() or "classic",
-    })
+    updates: dict = {}
+    if "ai_base_url" in payload:
+        updates["ai_base_url"] = payload.get("ai_base_url", "").strip().rstrip("/")
+    if "ai_api_key" in payload:
+        updates["ai_api_key"] = payload.get("ai_api_key", "").strip()
+    if "ai_model" in payload:
+        updates["ai_model"] = payload.get("ai_model", "").strip()
+    if "ai_verify_ssl" in payload:
+        updates["ai_verify_ssl"] = bool(payload.get("ai_verify_ssl", True))
+    if "default_script_style" in payload:
+        updates["default_script_style"] = payload.get("default_script_style", "").strip()
+    if "subtitle_style" in payload:
+        updates["subtitle_style"] = payload.get("subtitle_style", "classic").strip() or "classic"
+    settings = save_settings(updates)
     append_server_log("AI 设置已保存。")
     return jsonify(public_settings(settings))
 

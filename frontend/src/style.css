@@ -530,6 +530,7 @@ input:focus {
 }
 
 .batch-layout {
+  isolation: isolate;
   display: grid;
   grid-template-columns: 1.05fr .95fr;
   gap: 20px;
@@ -537,6 +538,26 @@ input:focus {
 
 .batch-dropzone {
   min-height: 210px;
+}
+
+.batch-upload,
+.batch-settings,
+.batch-table {
+  position: relative;
+}
+
+.batch-upload,
+.batch-settings {
+  min-height: 410px;
+}
+
+.batch-settings {
+  z-index: 3;
+  overflow: visible;
+}
+
+.batch-table {
+  z-index: 1;
 }
 
 .batch-policy {
@@ -746,8 +767,16 @@ input:focus {
 }
 
 .strategy-pill:hover {
+  border-color: rgba(162, 79, 44, .24);
+  background: rgba(162, 79, 44, .04);
+  box-shadow: 0 8px 18px rgba(29, 27, 24, .06);
+  transform: translateY(-1px);
+}
+
+.strategy-pill.active:hover {
   border-color: var(--accent);
-  background: rgba(162, 79, 44, .06);
+  background: rgba(162, 79, 44, .08);
+  box-shadow: 0 8px 18px rgba(162, 79, 44, .08);
 }
 
 .strategy-pill span {
@@ -996,37 +1025,46 @@ input:focus {
 .subtitle-preview-text {
   position: absolute;
   left: 50%;
-  bottom: 18px;
+  bottom: 24px;
   transform: translateX(-50%);
-  width: calc(100% - 36px);
+  width: calc(100% - 56px);
   text-align: center;
-  line-height: 1.45;
+  line-height: 1.28;
+  font-family: "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 .subtitle-style-card.classic .subtitle-preview-text {
   color: #ffffff;
-  font-size: 18px;
-  font-weight: 600;
+  font-size: 26px;
+  font-weight: 700;
   text-shadow:
-    0 1px 2px rgba(64, 49, 37, .56),
-    0 0 8px rgba(64, 49, 37, .16);
+    0 0 2px rgba(32, 32, 32, .95),
+    0 0 6px rgba(32, 32, 32, .9),
+    0 1px 0 rgba(32, 32, 32, .92);
 }
 
 .subtitle-style-card.bold .subtitle-preview-text {
   color: #ffffff;
-  font-size: 20px;
+  font-size: 28px;
   font-weight: 700;
   text-shadow:
-    0 1px 2px rgba(78, 56, 38, .62),
-    0 0 10px rgba(78, 56, 38, .2),
-    0 2px 14px rgba(255, 253, 249, .12);
+    -2px 0 0 rgba(20, 20, 20, .98),
+    2px 0 0 rgba(20, 20, 20, .98),
+    0 -2px 0 rgba(20, 20, 20, .98),
+    0 2px 0 rgba(20, 20, 20, .98),
+    -1px -1px 0 rgba(20, 20, 20, .96),
+    1px -1px 0 rgba(20, 20, 20, .96),
+    -1px 1px 0 rgba(20, 20, 20, .96),
+    1px 1px 0 rgba(20, 20, 20, .96);
 }
 
 .subtitle-style-card.minimal .subtitle-preview-text {
-  color: #fbfcff;
-  font-size: 17px;
+  color: #f2f2f2;
+  font-size: 24px;
   font-weight: 500;
-  text-shadow: 0 1px 2px rgba(64, 49, 37, .42);
+  text-shadow:
+    0 0 2px rgba(26, 26, 26, .92),
+    0 1px 1px rgba(26, 26, 26, .84);
 }
 
 .subtitle-style-copy {

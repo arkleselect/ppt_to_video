@@ -274,15 +274,53 @@ async def synthesize_one(text: str, out_path: Path, voice: str, rate: str) -> No
     await communicate.save(str(out_path))
 
 
-async def synthesize_all(notes: list[str], out_dir: Path, voice: str, rate: str) -> list[Path]:
+def ticks_to_seconds(ticks: int) -> float:
+    return ticks / 10_000_000
+
+
+async def synthesize_one_with_boundaries(
+    text: str,
+    out_path: Path,
+    voice: str,
+    rate: str,
+) -> list[dict]:
+    fallback = "本页暂无备注。"
+    communicate = edge_tts.Communicate(
+        text or fallback,
+        voice=voice,
+        rate=rate,
+        boundary="SentenceBoundary",
+    )
+    boundaries: list[dict] = []
+    with open(out_path, "wb") as audio:
+        async for message in communicate.stream():
+            if message["type"] == "audio":
+                audio.write(message["data"])
+            elif message["type"] == "SentenceBoundary":
+                boundaries.append({
+                    "start": ticks_to_seconds(message["offset"]),
+                    "end": ticks_to_seconds(message["offset"] + message["duration"]),
+                    "text": message["text"],
+                })
+    return boundaries
+
+
+async def synthesize_all(
+    notes: list[str],
+    out_dir: Path,
+    voice: str,
+    rate: str,
+) -> tuple[list[Path], list[list[dict]]]:
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = []
+    boundaries_by_page: list[list[dict]] = []
     for idx, note in enumerate(notes, start=1):
         path = out_dir / f"{idx:03d}.mp3"
-        await synthesize_one(note, path, voice, rate)
+        boundaries = await synthesize_one_with_boundaries(note, path, voice, rate)
         paths.append(path)
+        boundaries_by_page.append(boundaries)
         print(f"[progress] 生成音频 {idx}/{len(notes)}", flush=True)
-    return paths
+    return paths, boundaries_by_page
 
 
 def duration(path: Path) -> float:
@@ -291,9 +329,9 @@ def duration(path: Path) -> float:
 
 def subtitle_styles() -> dict[str, str]:
     return {
-        "classic": "FontName=Noto Sans CJK SC,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00333333,BorderStyle=1,Outline=2,Shadow=0,Alignment=2,MarginL=60,MarginR=60,MarginV=34",
-        "bold": "FontName=Noto Sans CJK SC,FontSize=20,PrimaryColour=&H00FFFFFF,OutlineColour=&H005A2A18,BorderStyle=1,Outline=3,Shadow=0,Alignment=2,MarginL=52,MarginR=52,MarginV=32",
-        "minimal": "FontName=Noto Sans CJK SC,FontSize=17,PrimaryColour=&H00F8F6F0,OutlineColour=&H00202020,BorderStyle=1,Outline=1,Shadow=0,Alignment=2,MarginL=72,MarginR=72,MarginV=28",
+        "classic": "Default,Noto Sans CJK SC,34,&H00FFFFFF,&H000000FF,&H00282828,&H00000000,0,0,0,0,100,100,0,0,1,2.4,0,2,72,72,38,1",
+        "bold": "Default,Noto Sans CJK SC,40,&H00FFFFFF,&H000000FF,&H00141414,&H00000000,1,0,0,0,100,100,0,0,1,3.8,0,2,64,64,40,1",
+        "minimal": "Default,Noto Sans CJK SC,30,&H00F2F2F2,&H000000FF,&H001A1A1A,&H00000000,0,0,0,0,100,100,0,0,1,1.2,0,2,84,84,34,1",
     }
 
 
@@ -318,8 +356,15 @@ def wrap_subtitle_text(text: str, max_chars: int = 22) -> str:
     return r"\N".join(line for line in lines if line)
 
 
-def write_ass_subtitles(notes: list[str], page_durations: list[float], output_path: Path, style_name: str) -> None:
+def write_ass_subtitles(
+    notes: list[str],
+    page_durations: list[float],
+    boundaries_by_page: list[list[dict]],
+    output_path: Path,
+    style_name: str,
+) -> None:
     style = subtitle_styles().get(style_name, subtitle_styles()["classic"])
+    lead_in = 0.42
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -328,18 +373,28 @@ def write_ass_subtitles(notes: list[str], page_durations: list[float], output_pa
         "",
         "[V4+ Styles]",
         "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding",
-        f"Style: Default,{style},0",
+        f"Style: {style}",
         "",
         "[Events]",
         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text",
     ]
     elapsed = 0.0
-    for note, page_duration in zip(notes, page_durations):
-        start = ass_time(elapsed)
+    for note, page_duration, boundaries in zip(notes, page_durations, boundaries_by_page):
+        page_start = elapsed
         elapsed += page_duration
-        end = ass_time(elapsed)
-        text = wrap_subtitle_text(note).replace("{", r"\{").replace("}", r"\}")
-        lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+        if boundaries:
+            for boundary in boundaries:
+                start_seconds = max(0.0, boundary["start"] - lead_in)
+                end_seconds = min(page_duration, max(start_seconds + 0.18, boundary["end"]))
+                start = ass_time(page_start + start_seconds)
+                end = ass_time(page_start + end_seconds)
+                text = wrap_subtitle_text(boundary["text"]).replace("{", r"\{").replace("}", r"\}")
+                lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
+        else:
+            start = ass_time(page_start)
+            end = ass_time(page_start + page_duration)
+            text = wrap_subtitle_text(note).replace("{", r"\{").replace("}", r"\}")
+            lines.append(f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}")
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -347,6 +402,7 @@ def build_video(
     slides: list[Path],
     audios: list[Path],
     notes: list[str],
+    boundaries_by_page: list[list[dict]],
     output_path: Path,
     target_minutes: float | None,
     subtitle_style: str,
@@ -407,7 +463,7 @@ def build_video(
             str(merged_video),
         ])
         print("[progress] 已完成最终视频拼接", flush=True)
-        write_ass_subtitles(notes, page_durations, subtitle_file, subtitle_style)
+        write_ass_subtitles(notes, page_durations, boundaries_by_page, subtitle_file, subtitle_style)
         print("[progress] 已生成字幕文件，开始压制字幕", flush=True)
         run([
             "ffmpeg", "-loglevel", "error", "-y",
@@ -465,11 +521,12 @@ def main() -> int:
     if len(slides) != len(notes):
         print(f"警告：导出图片 {len(slides)} 张，备注 {len(notes)} 页。", file=sys.stderr)
 
-    audios = asyncio.run(synthesize_all(notes, work_dir / "audio", args.voice, args.rate))
+    audios, boundaries_by_page = asyncio.run(synthesize_all(notes, work_dir / "audio", args.voice, args.rate))
     natural_total, final_total = build_video(
         slides,
         audios,
         notes,
+        boundaries_by_page,
         output_path,
         args.target_minutes,
         args.subtitle_style,

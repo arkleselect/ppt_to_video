@@ -47,6 +47,8 @@ const settings = ref({
 })
 const settingsMessage = ref('')
 const isSavingSettings = ref(false)
+const subtitleSettingsMessage = ref('')
+const isSavingSubtitleSettings = ref(false)
 const isTestingAI = ref(false)
 const autoExpandDuration = ref(true)
 const scriptFile = ref(null)
@@ -98,6 +100,8 @@ const subtitleStyleOptions = [
 ]
 const logs = ref([])
 const batchPollers = new Map()
+let settingsMessageTimer = null
+let subtitleSettingsMessageTimer = null
 
 async function readJson(response) {
   const text = await response.text()
@@ -325,6 +329,7 @@ async function startBatchItem(item, options = {}) {
           upload_id: item.uploadId,
           voice: selectedVoice.value,
           rate: selectedRate.value,
+          subtitle_style: settings.value.subtitle_style,
           ...(batchUseTargetDuration.value ? { target_minutes: Number(batchTargetMinutes.value) || 40 } : {}),
         }
     const data = await fetch(endpoint, {
@@ -722,6 +727,7 @@ async function generateVideo() {
       upload_id: uploadId.value,
       voice: selectedVoice.value,
       rate: selectedRate.value,
+      subtitle_style: settings.value.subtitle_style,
       ...(useTargetDuration.value ? { target_minutes: Number(targetMinutes.value) || 40 } : {}),
     }),
   }).then((r) => r.json())
@@ -797,10 +803,37 @@ async function saveAISettings() {
     }).then(readJson)
     settings.value = { ...settings.value, ...data, ai_api_key: '' }
     settingsMessage.value = '设置已保存。'
+    clearTimeout(settingsMessageTimer)
+    settingsMessageTimer = setTimeout(() => {
+      settingsMessage.value = ''
+    }, 2500)
   } catch (error) {
     settingsMessage.value = error.message || '保存失败，请确认后端已启动。'
   } finally {
     isSavingSettings.value = false
+  }
+}
+
+async function saveSubtitleSettings() {
+  isSavingSubtitleSettings.value = true
+  subtitleSettingsMessage.value = ''
+  try {
+    const payload = { subtitle_style: settings.value.subtitle_style }
+    const data = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(readJson)
+    settings.value = { ...settings.value, ...data, ai_api_key: '' }
+    subtitleSettingsMessage.value = '字幕样式已保存。'
+    clearTimeout(subtitleSettingsMessageTimer)
+    subtitleSettingsMessageTimer = setTimeout(() => {
+      subtitleSettingsMessage.value = ''
+    }, 2500)
+  } catch (error) {
+    subtitleSettingsMessage.value = error.message || '保存失败，请确认后端已启动。'
+  } finally {
+    isSavingSubtitleSettings.value = false
   }
 }
 
@@ -1446,7 +1479,6 @@ watch(activeTab, (value) => {
           <div class="section-head">
             <div class="section-title">
               <h2>AI 设置</h2>
-              <span>配置 OpenAI 兼容接口，用于讲稿生成</span>
             </div>
           </div>
           <div class="form">
@@ -1501,7 +1533,6 @@ watch(activeTab, (value) => {
           <div class="section-head">
             <div class="section-title">
               <h2>字幕样式</h2>
-              <span>生成视频时会自动压制字幕，这里选择默认样式</span>
             </div>
           </div>
           <div class="subtitle-style-grid">
@@ -1523,6 +1554,12 @@ watch(activeTab, (value) => {
               <Check v-if="settings.subtitle_style === option.value" :size="16" class="subtitle-style-check" />
             </button>
           </div>
+          <div class="settings-actions">
+            <button class="primary" @click="saveSubtitleSettings">
+              {{ isSavingSubtitleSettings ? '保存中' : '保存字幕样式' }}
+            </button>
+          </div>
+          <p v-if="subtitleSettingsMessage" class="settings-message">{{ subtitleSettingsMessage }}</p>
         </article>
       </section>
     </template>
@@ -1533,7 +1570,6 @@ watch(activeTab, (value) => {
           <div class="section-head">
             <div class="section-title">
               <h2>后端日志</h2>
-              <span>查看服务端运行、AI 调用和任务执行记录</span>
             </div>
             <div class="section-tools">
               <button class="utility compact" @click="loadServerLogs">刷新</button>
