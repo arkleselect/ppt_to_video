@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -209,4 +210,6 @@ def download(filename: str):
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5050, debug=True, use_reloader=False)
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "5050"))
+    app.run(host=host, port=port, debug=True, use_reloader=False)
