@@ -278,6 +278,55 @@ def ticks_to_seconds(ticks: int) -> float:
     return ticks / 10_000_000
 
 
+def merge_word_boundaries(boundaries: list[dict]) -> list[dict]:
+    if not boundaries:
+        return []
+
+    merged: list[dict] = []
+    buffer_text = ""
+    buffer_start = None
+    buffer_end = None
+
+    def flush() -> None:
+        nonlocal buffer_text, buffer_start, buffer_end
+        text = re.sub(r"\s+", "", buffer_text)
+        if text and buffer_start is not None and buffer_end is not None:
+            merged.append({
+                "start": buffer_start,
+                "end": buffer_end,
+                "text": text,
+            })
+        buffer_text = ""
+        buffer_start = None
+        buffer_end = None
+
+    for boundary in boundaries:
+        text = boundary["text"]
+        start = boundary["start"]
+        end = boundary["end"]
+        compact = re.sub(r"\s+", "", text)
+        if not compact:
+            continue
+
+        if buffer_start is None:
+            buffer_start = start
+        buffer_end = end
+        buffer_text += compact
+
+        compact_len = len(re.sub(r"\s+", "", buffer_text))
+        if re.search(r"[。！？!?；;：:]", compact):
+            flush()
+            continue
+        if compact_len >= 18 and re.search(r"[，、,）)]$", compact):
+            flush()
+            continue
+        if compact_len >= 26:
+            flush()
+
+    flush()
+    return merged
+
+
 async def synthesize_one_with_boundaries(
     text: str,
     out_path: Path,
@@ -289,20 +338,20 @@ async def synthesize_one_with_boundaries(
         text or fallback,
         voice=voice,
         rate=rate,
-        boundary="SentenceBoundary",
+        boundary="WordBoundary",
     )
-    boundaries: list[dict] = []
+    word_boundaries: list[dict] = []
     with open(out_path, "wb") as audio:
         async for message in communicate.stream():
             if message["type"] == "audio":
                 audio.write(message["data"])
-            elif message["type"] == "SentenceBoundary":
-                boundaries.append({
+            elif message["type"] == "WordBoundary":
+                word_boundaries.append({
                     "start": ticks_to_seconds(message["offset"]),
                     "end": ticks_to_seconds(message["offset"] + message["duration"]),
                     "text": message["text"],
                 })
-    return boundaries
+    return merge_word_boundaries(word_boundaries)
 
 
 async def synthesize_all(
@@ -329,9 +378,9 @@ def duration(path: Path) -> float:
 
 def subtitle_styles() -> dict[str, str]:
     return {
-        "classic": "Default,Noto Sans CJK SC,34,&H00FFFFFF,&H000000FF,&H00282828,&H00000000,0,0,0,0,100,100,0,0,1,2.4,0,2,72,72,38,1",
-        "bold": "Default,Noto Sans CJK SC,40,&H00FFFFFF,&H000000FF,&H00141414,&H00000000,1,0,0,0,100,100,0,0,1,3.8,0,2,64,64,40,1",
-        "minimal": "Default,Noto Sans CJK SC,30,&H00F2F2F2,&H000000FF,&H001A1A1A,&H00000000,0,0,0,0,100,100,0,0,1,1.2,0,2,84,84,34,1",
+        "classic": "Default,Noto Sans CJK SC,44,&H00FFFFFF,&H000000FF,&H00282828,&H00000000,0,0,0,0,100,100,0,0,1,2.4,0,2,72,72,38,1",
+        "bold": "Default,Noto Sans CJK SC,50,&H00FFFFFF,&H000000FF,&H00141414,&H00000000,1,0,0,0,100,100,0,0,1,3.8,0,2,64,64,40,1",
+        "minimal": "Default,Noto Sans CJK SC,40,&H00F2F2F2,&H000000FF,&H001A1A1A,&H00000000,0,0,0,0,100,100,0,0,1,1.2,0,2,84,84,34,1",
     }
 
 
@@ -364,7 +413,7 @@ def write_ass_subtitles(
     style_name: str,
 ) -> None:
     style = subtitle_styles().get(style_name, subtitle_styles()["classic"])
-    lead_in = 0.42
+    lead_in = 0.35
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
