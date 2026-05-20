@@ -122,6 +122,28 @@ const batchPollers = new Map()
 let settingsMessageTimer = null
 let subtitleSettingsMessageTimer = null
 
+function loadClientUser() {
+  const storageKey = 'pptToVideoClientUser'
+  const existing = localStorage.getItem(storageKey)
+  if (existing) return existing
+  const suffix = (window.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`)
+    .replace(/-/g, '')
+    .slice(0, 6)
+    .toUpperCase()
+  const user = `用户-${suffix}`
+  localStorage.setItem(storageKey, user)
+  return user
+}
+
+const currentUser = ref(loadClientUser())
+
+function userHeaders(extra = {}) {
+  return {
+    ...extra,
+    'X-Client-User': currentUser.value,
+  }
+}
+
 function downloadLink(filename, downloadName = '') {
   if (!filename) return ''
   const query = downloadName ? `?name=${encodeURIComponent(downloadName)}` : ''
@@ -348,6 +370,7 @@ async function analyzeBatchItem(item) {
     const endpoint = batchMode.value === 'script' ? '/api/script/analyze' : '/api/analyze'
     const data = await fetch(endpoint, {
       method: 'POST',
+      headers: userHeaders(),
       body: formData,
     }).then(readJson)
     item.uploadId = data.upload_id
@@ -395,6 +418,7 @@ async function startBatchItem(item, options = {}) {
     const body = batchMode.value === 'script'
       ? {
           upload_id: item.uploadId,
+          user_id: currentUser.value,
           strategy: batchScriptStrategy.value,
           style: batchScriptStyle.value,
           enrichment: batchScriptEnrichment.value,
@@ -404,6 +428,7 @@ async function startBatchItem(item, options = {}) {
         }
       : {
           upload_id: item.uploadId,
+          user_id: currentUser.value,
           voice: selectedVoice.value,
           rate: selectedRate.value,
           subtitle_style: settings.value.subtitle_style,
@@ -411,7 +436,7 @@ async function startBatchItem(item, options = {}) {
         }
     const data = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     }).then(readJson)
     item.jobId = data.job_id
@@ -595,7 +620,7 @@ async function analyzeScriptPpt() {
   const formData = new FormData()
   formData.append('pptx', scriptFile.value)
   try {
-    const data = await fetch('/api/script/analyze', { method: 'POST', body: formData }).then(readJson)
+    const data = await fetch('/api/script/analyze', { method: 'POST', headers: userHeaders(), body: formData }).then(readJson)
     scriptUploadId.value = data.upload_id
     scriptSlides.value = data.slides
     scriptAnalyzeMessage.value = `分析完成：共 ${data.slide_count} 页。`
@@ -635,9 +660,10 @@ async function generateScripts() {
   try {
     const data = await fetch('/api/script/generate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({
         upload_id: scriptUploadId.value,
+        user_id: currentUser.value,
         strategy: scriptStrategy.value,
         style: scriptStyle.value,
         enrichment: scriptEnrichment.value,
@@ -730,6 +756,7 @@ async function analyzeFile() {
   try {
     const data = await fetch('/api/analyze', {
       method: 'POST',
+      headers: userHeaders(),
       body: formData,
       signal: analyzeController.value.signal,
     }).then((r) => r.json())
@@ -802,9 +829,10 @@ async function generateVideo() {
   addLog('已创建视频生成任务。')
   const data = await fetch('/api/generate', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: userHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({
       upload_id: uploadId.value,
+      user_id: currentUser.value,
       voice: selectedVoice.value,
       rate: selectedRate.value,
       subtitle_style: settings.value.subtitle_style,
@@ -860,7 +888,7 @@ async function loadServerLogs() {
 
 async function loadSettings() {
   try {
-    const data = await fetch('/api/settings').then(readJson)
+    const data = await fetch('/api/settings', { headers: userHeaders() }).then(readJson)
     settings.value = {
       ...settings.value,
       ...data,
@@ -878,8 +906,8 @@ async function saveAISettings() {
   try {
     const data = await fetch('/api/settings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings.value),
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ...settings.value, user_id: currentUser.value }),
     }).then(readJson)
     settings.value = { ...settings.value, ...data, ai_api_key: '' }
     settingsMessage.value = '设置已保存。'
@@ -901,8 +929,8 @@ async function saveSubtitleSettings() {
     const payload = { subtitle_style: settings.value.subtitle_style }
     const data = await fetch('/api/settings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ...payload, user_id: currentUser.value }),
     }).then(readJson)
     settings.value = { ...settings.value, ...data, ai_api_key: '' }
     subtitleSettingsMessage.value = '字幕样式已保存。'
@@ -923,8 +951,8 @@ async function testAIConnection() {
   try {
     const data = await fetch('/api/settings/test-ai', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings.value),
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ ...settings.value, user_id: currentUser.value }),
     }).then(readJson)
     settingsMessage.value = data.message
   } catch (error) {
@@ -1660,7 +1688,7 @@ watch(activeTab, (value) => {
         <article class="card settings-card">
           <h2>说明</h2>
           <div class="settings-note">
-            <p>API Key 会保存在本机 <code>backend/storage/settings.json</code></p>
+            <p>API Key 会按当前用户保存在本机 <code>backend/storage/settings.json</code></p>
             <p>Base URL 建议填写 OpenAI 兼容接口根路径</p>
             <p>例如 <code>https://api.openai.com/v1</code>。</p>
             <p>如果你使用的是自签名证书、公司网关或中转服务，可先关闭“校验 SSL 证书”再测试。</p>
@@ -1699,6 +1727,19 @@ watch(activeTab, (value) => {
             </button>
           </div>
           <p v-if="subtitleSettingsMessage" class="settings-message">{{ subtitleSettingsMessage }}</p>
+        </article>
+
+        <article class="card settings-card current-user-card">
+          <div class="section-head">
+            <div class="section-title">
+              <h2>当前用户</h2>
+            </div>
+          </div>
+          <div class="readonly-user">
+            <span>本机浏览器用户</span>
+            <strong>{{ currentUser }}</strong>
+          </div>
+          <p class="settings-message muted">该用户标识用于区分任务和后端日志，不可在页面中更改。</p>
         </article>
       </section>
     </template>

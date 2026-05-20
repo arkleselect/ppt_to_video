@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import shutil
+import socket
 import ssl
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from datetime import datetime
 from collections import deque
@@ -39,10 +42,31 @@ jobs: dict[str, dict] = {}
 server_logs: deque[dict] = deque(maxlen=300)
 token_usage_history: deque[dict] = deque(maxlen=120)
 
+
+def env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+SCRIPT_MAX_CONCURRENT_JOBS = env_int("SCRIPT_MAX_CONCURRENT_JOBS", 2)
+AI_MAX_CONCURRENT_REQUESTS = env_int("AI_MAX_CONCURRENT_REQUESTS", 2)
+AI_REQUEST_RETRIES = env_int("AI_REQUEST_RETRIES", 4)
+script_job_slots = threading.BoundedSemaphore(SCRIPT_MAX_CONCURRENT_JOBS)
+ai_request_slots = threading.BoundedSemaphore(AI_MAX_CONCURRENT_REQUESTS)
+
 TOKEN_PRICING = {
     "input_per_million": 2.5,
     "completion_per_million": 15.0,
     "cache_read_per_million": 0.25,
+}
+USER_AI_SETTING_KEYS = {
+    "ai_base_url",
+    "ai_api_key",
+    "ai_model",
+    "ai_verify_ssl",
+    "default_script_style",
 }
 
 
@@ -64,6 +88,7 @@ def default_settings() -> dict:
         "ai_verify_ssl": True,
         "default_script_style": "培训讲师 · 稳妥清晰",
         "subtitle_style": "classic",
+        "users": {},
     }
 
 
@@ -72,7 +97,10 @@ def load_settings() -> dict:
         return default_settings()
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-        return {**default_settings(), **data}
+        settings = {**default_settings(), **data}
+        if not isinstance(settings.get("users"), dict):
+            settings["users"] = {}
+        return settings
     except Exception:
         return default_settings()
 
@@ -86,14 +114,54 @@ def save_settings(data: dict) -> dict:
     return merged
 
 
-def public_settings(settings: dict) -> dict:
+def user_settings(settings: dict, user: str) -> dict:
+    users = settings.setdefault("users", {})
+    stored = users.get(user) if isinstance(users, dict) else {}
+    if not isinstance(stored, dict):
+        stored = {}
+    defaults = default_settings()
     return {
-        "ai_base_url": settings.get("ai_base_url", ""),
-        "ai_model": settings.get("ai_model", ""),
-        "ai_verify_ssl": settings.get("ai_verify_ssl", True),
-        "default_script_style": settings.get("default_script_style", ""),
-        "subtitle_style": settings.get("subtitle_style", "classic"),
-        "has_api_key": bool(settings.get("ai_api_key")),
+        "ai_base_url": stored.get("ai_base_url", ""),
+        "ai_api_key": stored.get("ai_api_key", ""),
+        "ai_model": stored.get("ai_model", ""),
+        "ai_verify_ssl": stored.get("ai_verify_ssl", defaults["ai_verify_ssl"]),
+        "default_script_style": stored.get("default_script_style", defaults["default_script_style"]),
+        "subtitle_style": settings.get("subtitle_style", defaults["subtitle_style"]),
+    }
+
+
+def load_user_settings(user: str) -> dict:
+    return user_settings(load_settings(), user)
+
+
+def save_user_settings(user: str, data: dict) -> dict:
+    settings = load_settings()
+    users = settings.setdefault("users", {})
+    current = users.get(user, {})
+    if not isinstance(current, dict):
+        current = {}
+
+    updates = {key: data[key] for key in USER_AI_SETTING_KEYS if key in data}
+    if "ai_api_key" in updates and not updates["ai_api_key"]:
+        updates["ai_api_key"] = current.get("ai_api_key", "")
+    users[user] = {**current, **updates}
+
+    if "subtitle_style" in data:
+        settings["subtitle_style"] = data.get("subtitle_style", "classic").strip() or "classic"
+
+    SETTINGS_FILE.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    return user_settings(settings, user)
+
+
+def public_settings(settings: dict, user: str) -> dict:
+    current = user_settings(settings, user)
+    return {
+        "ai_base_url": current.get("ai_base_url", ""),
+        "ai_model": current.get("ai_model", ""),
+        "ai_verify_ssl": current.get("ai_verify_ssl", True),
+        "default_script_style": current.get("default_script_style", ""),
+        "subtitle_style": current.get("subtitle_style", "classic"),
+        "has_api_key": bool(current.get("ai_api_key")),
     }
 
 
@@ -110,7 +178,7 @@ def build_ssl_context(verify_ssl: bool = True) -> ssl.SSLContext:
     return ssl_context
 
 
-def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> str:
+def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4, log_prefix: str = "AI") -> str:
     base_url = settings.get("ai_base_url", "").strip().rstrip("/")
     api_key = settings.get("ai_api_key", "").strip()
     model = settings.get("ai_model", "").strip()
@@ -133,10 +201,45 @@ def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4) -> s
         method="POST",
     )
     ssl_context = build_ssl_context(verify_ssl=verify_ssl)
-    with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    payload = open_ai_chat_with_retry(req, ssl_context, log_prefix)
     record_token_usage(payload.get("usage") or {})
     return payload["choices"][0]["message"]["content"].strip()
+
+
+def is_retryable_ai_error(exc: Exception) -> bool:
+    if isinstance(exc, url_error.HTTPError):
+        return exc.code in {408, 409, 425, 429, 500, 502, 503, 504}
+    return isinstance(
+        exc,
+        (
+            url_error.URLError,
+            ssl.SSLError,
+            TimeoutError,
+            socket.timeout,
+            ConnectionError,
+        ),
+    )
+
+
+def open_ai_chat_with_retry(req: url_request.Request, ssl_context: ssl.SSLContext, log_prefix: str) -> dict:
+    last_exc: Exception | None = None
+    for attempt in range(1, AI_REQUEST_RETRIES + 1):
+        try:
+            with ai_request_slots:
+                with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            last_exc = exc
+            if not is_retryable_ai_error(exc) or attempt >= AI_REQUEST_RETRIES:
+                raise
+            delay = min(8.0, 1.5 * (2 ** (attempt - 1))) + random.uniform(0, 0.5)
+            append_server_log(
+                f"{log_prefix} 请求临时失败，{delay:.1f} 秒后重试（第 {attempt}/{AI_REQUEST_RETRIES} 次）：{exc}",
+                "error",
+            )
+            time.sleep(delay)
+    assert last_exc is not None
+    raise last_exc
 
 
 def usage_int(value) -> int:
@@ -343,6 +446,29 @@ def append_server_log(text: str, level: str = "info"):
     })
 
 
+def client_user_label(value: str | None = None) -> str:
+    label = (value or request.headers.get("X-Client-User") or "").strip()
+    label = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "", label)
+    return label[:32] or "未知用户"
+
+
+def job_user_label(job: dict | None) -> str:
+    if not job:
+        return "未知用户"
+    return job.get("user") or "未知用户"
+
+
+def job_log_prefix(kind: str, job_id: str, job: dict | None = None) -> str:
+    return f"{kind}任务 {job_id}（{job_user_label(job)}）"
+
+
+def append_script_progress(job: dict | None, job_id: str | None, text: str, state: str = "进行中"):
+    if job is not None:
+        append_log(job, text, state)
+    prefix = f"{job_log_prefix('讲稿', job_id, job)}：" if job_id else ""
+    append_server_log(f"{prefix}{text}", "error" if state == "失败" else "info")
+
+
 def client_filename(filename: str | None, fallback: str) -> str:
     name = re.split(r"[\\/]", filename or "")[-1].strip()
     return name or fallback
@@ -382,8 +508,8 @@ def download_name_for_upload(path: Path, suffix: str | None = None) -> str:
     return f"{stem}{suffix}"
 
 
-def generate_scripts_payload(src: Path, payload: dict) -> dict:
-    settings = load_settings()
+def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, job_id: str | None = None) -> dict:
+    settings = load_user_settings(job_user_label(job))
     strategy = payload.get("strategy", "short")
     style = payload.get("style") or settings.get("default_script_style") or "培训讲师 · 稳妥清晰"
     enrichment = payload.get("enrichment", "light")
@@ -406,14 +532,17 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
             script = ai_chat(
                 settings,
                 script_prompt(strategy, style, enrichment, idx, slide_text, note, target_chars_per_slide),
+                log_prefix=job_log_prefix("讲稿", job_id, job) if job_id else "讲稿",
             )
         scripts.append(script)
-        append_server_log(f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
+        append_script_progress(job, job_id, f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
 
     expansion_applied = False
     estimated_minutes = estimate_minutes_from_scripts(scripts)
     if strategy == "duration" and auto_expand_duration and should_expand_duration(target_minutes, estimated_minutes):
-        append_server_log(
+        append_script_progress(
+            job,
+            job_id,
             f"首轮讲稿预计约 {estimated_minutes:.1f} 分钟，低于目标 {target_minutes:.1f} 分钟，开始增量补写。"
         )
         missing_chars = max(0, int((target_minutes - estimated_minutes) * 264))
@@ -433,22 +562,23 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
                         scripts[idx],
                         extra_per_page,
                     ),
+                    log_prefix=job_log_prefix("讲稿", job_id, job) if job_id else "讲稿",
                 )
                 scripts[idx] = expanded
-                append_server_log(f"已补写第 {turn}/{len(expandable_indices)} 个扩写页面（第 {idx + 1} 页）。")
+                append_script_progress(job, job_id, f"已补写第 {turn}/{len(expandable_indices)} 个扩写页面（第 {idx + 1} 页）。")
             estimated_minutes = estimate_minutes_from_scripts(scripts)
             expansion_applied = True
-            append_server_log(f"补写后预计讲稿时长约 {estimated_minutes:.1f} 分钟。")
+            append_script_progress(job, job_id, f"补写后预计讲稿时长约 {estimated_minutes:.1f} 分钟。")
 
     output_name = None
     output_download_name = None
     write_result = None
     if write_to_ppt:
         output_download_name = download_name_for_upload(src, ".pptx")
-        output_path = JOB_DIR / f"{uuid.uuid4().hex}.pptx"
+        output_path = JOB_DIR / f"script-{job_id or uuid.uuid4().hex}-{uuid.uuid4().hex}.pptx"
         write_result = write_notes_copy(src, scripts, output_path)
         output_name = output_path.name
-        append_server_log(f"已生成更新备注后的 PPT：{output_download_name}")
+        append_script_progress(job, job_id, f"已生成更新备注后的 PPT：{output_download_name}", "完成")
 
     return {
         "scripts": [
@@ -465,27 +595,33 @@ def generate_scripts_payload(src: Path, payload: dict) -> dict:
 
 def run_script_job(job_id: str, src: Path, payload: dict):
     job = jobs[job_id]
+    append_log(job, "讲稿生成任务已进入后端队列。")
+    append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已进入队列。")
+    acquired = script_job_slots.acquire(blocking=False)
+    if not acquired:
+        append_log(job, f"当前已有讲稿任务在执行，等待可用名额（最大并行 {SCRIPT_MAX_CONCURRENT_JOBS} 个）。", "排队中")
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待执行名额。")
+        script_job_slots.acquire()
     job["status"] = "running"
     append_log(job, "讲稿生成任务已启动。")
-    append_server_log(f"讲稿任务 {job_id} 已启动。")
+    append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已启动。")
     try:
         slide_count = len(extract_slide_texts(src))
         if slide_count:
             append_log(job, f"已识别 {slide_count} 页，开始逐页生成讲稿。")
-        result = generate_scripts_payload(src, payload)
-        result_count = len(result.get("scripts", []))
-        for idx in range(result_count):
-            append_log(job, f"已生成第 {idx + 1}/{result_count} 页讲稿。")
+        result = generate_scripts_payload(src, payload, job, job_id)
         if result.get("ppt_output"):
             append_log(job, "已写入新的 PPT 副本。", "完成")
         job["result"] = result
         job["status"] = "done"
         append_log(job, "讲稿生成完成。", "完成")
-        append_server_log(f"讲稿任务 {job_id} 已完成。")
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已完成。")
     except Exception as exc:
         job["status"] = "error"
         append_log(job, f"讲稿生成失败：{exc}", "失败")
-        append_server_log(f"讲稿生成失败：{exc}", "error")
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 失败：{exc}", "error")
+    finally:
+        script_job_slots.release()
 
 
 async def chinese_voices() -> list[dict]:
@@ -572,7 +708,7 @@ def script_generate():
         if not src.exists():
             return jsonify({"error": "上传文件不存在"}), 404
         job_id = uuid.uuid4().hex[:10]
-        jobs[job_id] = {"status": "queued", "logs": [], "kind": "script"}
+        jobs[job_id] = {"status": "queued", "logs": [], "kind": "script", "user": client_user_label(payload.get("user_id"))}
         thread = threading.Thread(target=run_script_job, args=(job_id, src, payload), daemon=True)
         thread.start()
         return jsonify({"job_id": job_id})
@@ -610,7 +746,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         cmd.extend(["--target-minutes", str(target_minutes)])
     job["status"] = "running"
     append_log(job, "任务已启动。")
-    append_server_log(f"任务 {job_id} 已启动。")
+    append_server_log(f"{job_log_prefix('视频', job_id, job)} 已启动。")
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     job["process"] = proc
     stdout_lines = []
@@ -621,7 +757,7 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
         if text.startswith("[progress] "):
             progress_text = text.replace("[progress] ", "", 1)
             append_log(job, progress_text)
-            append_server_log(f"任务 {job_id}：{progress_text}")
+            append_server_log(f"{job_log_prefix('视频', job_id, job)}：{progress_text}")
     stderr = proc.stderr.read() if proc.stderr else ""
     returncode = proc.wait()
     job["stdout"] = "".join(stdout_lines)
@@ -629,25 +765,25 @@ def run_job(job_id: str, src: Path, voice: str, rate: str, target_minutes: float
     job.pop("process", None)
     if job.get("status") == "stopped":
         append_log(job, "视频生成已停止。", "已停止")
-        append_server_log(f"任务 {job_id} 已停止。")
+        append_server_log(f"{job_log_prefix('视频', job_id, job)} 已停止。")
     elif returncode == 0:
         job["status"] = "done"
         job["output"] = out.name
         job["output_download_name"] = download_name_for_upload(src, ".mp4")
         append_log(job, "视频生成完成。", "完成")
-        append_server_log(f"任务 {job_id} 已完成。")
+        append_server_log(f"{job_log_prefix('视频', job_id, job)} 已完成。")
     else:
         job["status"] = "error"
-        append_server_log(f"任务 {job_id} 子进程返回码：{returncode}", "error")
+        append_server_log(f"{job_log_prefix('视频', job_id, job)} 子进程返回码：{returncode}", "error")
         if job["stdout"].strip():
-            append_server_log(f"STDOUT:\n{job['stdout'].strip()}", "error")
+            append_server_log(f"{job_log_prefix('视频', job_id, job)} STDOUT:\n{job['stdout'].strip()}", "error")
         if stderr:
             print(stderr, flush=True)
             first_line = stderr.strip().splitlines()[-1]
             append_log(job, first_line, "失败")
-            append_server_log(f"STDERR:\n{stderr.strip()}", "error")
+            append_server_log(f"{job_log_prefix('视频', job_id, job)} STDERR:\n{stderr.strip()}", "error")
         append_log(job, "视频生成失败。", "失败")
-        append_server_log(f"任务 {job_id} 失败。", "error")
+        append_server_log(f"{job_log_prefix('视频', job_id, job)} 失败。", "error")
 
 
 @app.post("/api/generate")
@@ -659,7 +795,7 @@ def generate():
     settings = load_settings()
     subtitle_style = (payload.get("subtitle_style") or settings.get("subtitle_style") or "classic").strip()
     job_id = uuid.uuid4().hex[:10]
-    jobs[job_id] = {"status": "queued", "logs": []}
+    jobs[job_id] = {"status": "queued", "logs": [], "kind": "video", "user": client_user_label(payload.get("user_id"))}
     thread = threading.Thread(
         target=run_job,
         args=(
@@ -710,12 +846,14 @@ def get_token_usage():
 
 @app.get("/api/settings")
 def get_settings():
-    return jsonify(public_settings(load_settings()))
+    user = client_user_label()
+    return jsonify(public_settings(load_settings(), user))
 
 
 @app.post("/api/settings")
 def update_settings():
     payload = request.get_json(force=True)
+    user = client_user_label(payload.get("user_id"))
     updates: dict = {}
     if "ai_base_url" in payload:
         updates["ai_base_url"] = payload.get("ai_base_url", "").strip().rstrip("/")
@@ -729,15 +867,16 @@ def update_settings():
         updates["default_script_style"] = payload.get("default_script_style", "").strip()
     if "subtitle_style" in payload:
         updates["subtitle_style"] = payload.get("subtitle_style", "classic").strip() or "classic"
-    settings = save_settings(updates)
-    append_server_log("AI 设置已保存。")
-    return jsonify(public_settings(settings))
+    settings = save_user_settings(user, updates)
+    append_server_log(f"AI 设置已保存（{user}）。")
+    return jsonify(public_settings(load_settings(), user))
 
 
 @app.post("/api/settings/test-ai")
 def test_ai_settings():
     payload = request.get_json(silent=True) or {}
-    stored = load_settings()
+    user = client_user_label(payload.get("user_id"))
+    stored = load_user_settings(user)
     settings = {**stored, **payload}
     if not payload.get("ai_api_key"):
         settings["ai_api_key"] = stored.get("ai_api_key", "")
@@ -755,14 +894,15 @@ def test_ai_settings():
                 {"role": "user", "content": "请只回复 OK。"},
             ],
             temperature=0,
+            log_prefix=f"AI 连接测试（{user}）",
         )
-        append_server_log("AI 连接测试成功。")
+        append_server_log(f"AI 连接测试成功（{user}）。")
         return jsonify({"ok": True, "message": f"连接成功：{message[:40]}"})
     except url_error.HTTPError as exc:
-        append_server_log(f"AI 连接测试失败：HTTP {exc.code}", "error")
+        append_server_log(f"AI 连接测试失败（{user}）：HTTP {exc.code}", "error")
         return jsonify({"ok": False, "message": f"连接失败：HTTP {exc.code}。"}), 400
     except Exception as exc:
-        append_server_log(f"AI 连接测试失败：{exc}", "error")
+        append_server_log(f"AI 连接测试失败（{user}）：{exc}", "error")
         return jsonify({"ok": False, "message": f"连接失败：{exc}"}), 400
 
 

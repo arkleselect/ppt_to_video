@@ -1074,6 +1074,36 @@ input:focus {
   grid-column: 1 / -1;
 }
 
+.current-user-card {
+  grid-column: 1 / -1;
+}
+
+.readonly-user {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 249, .64);
+}
+
+.readonly-user span {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.readonly-user strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.settings-message.muted {
+  color: var(--ink-soft);
+}
+
 .subtitle-style-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
