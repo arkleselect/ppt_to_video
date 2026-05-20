@@ -181,6 +181,27 @@ function historySeries(field) {
   return tokenUsage.value.history.map((item) => Number(item[field] || 0))
 }
 
+function logUser(text = '') {
+  const match = text.match(/（(用户-[A-Za-z0-9_-]+)）/)
+  return match?.[1] || ''
+}
+
+function logUserTone(user = '') {
+  if (!user) return {}
+  let hash = 0
+  for (const char of user) {
+    hash = (hash * 31 + char.charCodeAt(0)) % 360
+  }
+  const hues = [18, 42, 82, 148, 188, 218, 268, 318]
+  const hue = hues[hash % hues.length]
+  return {
+    '--log-user-bg': `hsl(${hue} 34% 92%)`,
+    '--log-user-border': `hsl(${hue} 24% 72%)`,
+    '--log-user-text': `hsl(${hue} 28% 30%)`,
+    '--log-user-accent': `hsl(${hue} 34% 48%)`,
+  }
+}
+
 function loadTokenUsageIfNeeded() {
   if (activeTab.value === 'tokenUsage') {
     loadTokenUsage()
@@ -1755,11 +1776,19 @@ watch(activeTab, (value) => {
               <button class="utility compact" @click="loadServerLogs">刷新</button>
             </div>
           </div>
-          <div class="server-log-list">
+          <div class="server-log-list server-log-list-tall">
             <div v-if="!serverLogs.length" class="empty-log">暂无后端日志。</div>
-            <div v-for="item in serverLogs" :key="item.time + item.text" class="server-log-item">
-              <span>{{ item.time }}</span>
-              <pre :class="{ error: item.level === 'error' }">{{ item.text }}</pre>
+            <div
+              v-for="item in serverLogs"
+              :key="item.time + item.text"
+              class="server-log-item server-log-user-item"
+              :class="{ 'has-user': logUser(item.text) }"
+              :style="logUserTone(logUser(item.text))"
+            >
+              <span class="log-time">{{ item.time }}</span>
+              <div class="server-log-body">
+                <pre :class="{ error: item.level === 'error' }"><span v-if="logUser(item.text)" class="log-user-dot" aria-hidden="true"></span>{{ item.text }}</pre>
+              </div>
             </div>
           </div>
         </article>
