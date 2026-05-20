@@ -18,6 +18,7 @@ from datetime import datetime
 from collections import deque
 from pathlib import Path
 from urllib import error as url_error
+from urllib.parse import unquote
 from urllib import request as url_request
 
 import edge_tts
@@ -447,7 +448,11 @@ def append_server_log(text: str, level: str = "info"):
 
 
 def client_user_label(value: str | None = None) -> str:
-    label = (value or request.headers.get("X-Client-User") or "").strip()
+    raw_label = (value or request.headers.get("X-Client-User") or "").strip()
+    try:
+        label = unquote(raw_label)
+    except Exception:
+        label = raw_label
     label = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "", label)
     return label[:32] or "未知用户"
 

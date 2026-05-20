@@ -140,7 +140,7 @@ const currentUser = ref(loadClientUser())
 function userHeaders(extra = {}) {
   return {
     ...extra,
-    'X-Client-User': currentUser.value,
+    'X-Client-User': encodeURIComponent(currentUser.value),
   }
 }
 
