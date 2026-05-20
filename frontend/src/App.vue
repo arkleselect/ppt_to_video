@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Check, ChevronDown, CircleHelp, Download, FileUp, LoaderCircle, Square } from 'lucide-vue-next'
 
 const fileName = ref('还没有文件')
@@ -121,6 +121,10 @@ const logs = ref([])
 const batchPollers = new Map()
 let settingsMessageTimer = null
 let subtitleSettingsMessageTimer = null
+
+const batchDownloadableItems = computed(() =>
+  batchItems.value.filter((item) => item.output || item.pptOutput),
+)
 
 function loadClientUser() {
   const storageKey = 'pptToVideoClientUser'
@@ -604,6 +608,17 @@ function batchOutputUrl(item) {
   const filename = item.resultKind === 'script' ? item.pptOutput : item.output
   const downloadName = item.resultKind === 'script' ? item.pptDownloadName : item.outputDownloadName
   return downloadLink(filename, downloadName)
+}
+
+function downloadAllBatchOutputs() {
+  batchDownloadableItems.value.forEach((item) => {
+    const link = document.createElement('a')
+    link.href = batchOutputUrl(item)
+    link.download = ''
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  })
 }
 
 function setScriptFile(file) {
@@ -1382,6 +1397,14 @@ watch(activeTab, (value) => {
               <h2>任务队列</h2>
               <span>{{ batchItems.length ? `${batchItems.length} 个文件` : '等待加入文件' }}</span>
             </div>
+            <button
+              v-if="batchDownloadableItems.length"
+              class="primary compact"
+              @click="downloadAllBatchOutputs"
+            >
+              <Download :size="15" />
+              全部下载
+            </button>
           </div>
           <div class="queue-list">
             <div v-if="!batchItems.length" class="empty-log">
@@ -1396,7 +1419,8 @@ watch(activeTab, (value) => {
                 <span class="muted">{{ item.slides ? `${item.slides} 页` : '待分析' }}</span>
                 <span :class="batchStatusClass(item)">{{ item.status }}</span>
                 <div class="queue-actions">
-                  <a v-if="item.output || item.pptOutput" class="utility compact" :href="batchOutputUrl(item)">
+                  <a v-if="item.output || item.pptOutput" class="primary compact" :href="batchOutputUrl(item)">
+                    <Download :size="15" />
                     {{ item.resultKind === 'script' ? '下载 PPT' : '下载视频' }}
                   </a>
                   <button v-else-if="item.statusTone === 'running'" class="danger compact" @click="stopBatchItem(item)">停止</button>
