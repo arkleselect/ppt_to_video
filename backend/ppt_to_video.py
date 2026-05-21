@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -36,6 +37,53 @@ ET.register_namespace("r", NS["r"])
 
 def run(cmd: list[str], cwd: Path | None = None) -> None:
     subprocess.run(cmd, cwd=cwd, check=True)
+
+
+def libreoffice_user_installation_arg(profile_dir: Path) -> str:
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return f"-env:UserInstallation={profile_dir.resolve().as_uri()}"
+
+
+def convert_pptx_to_pdf(soffice: str, pptx_path: Path, pdf_dir: Path, out_dir: Path) -> Path:
+    pdf_path = pdf_dir / f"{pptx_path.stem}.pdf"
+    last_error: subprocess.CalledProcessError | None = None
+
+    for attempt in range(1, 4):
+        profile_dir = out_dir / f"lo_profile_{attempt}"
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir, ignore_errors=True)
+
+        cmd = [
+            soffice,
+            libreoffice_user_installation_arg(profile_dir),
+            "--headless",
+            "--nologo",
+            "--nofirststartwizard",
+            "--nolockcheck",
+            "--convert-to",
+            "pdf:impress_pdf_Export",
+            "--outdir",
+            str(pdf_dir),
+            str(pptx_path),
+        ]
+
+        try:
+            run(cmd)
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            print(f"[progress] LibreOffice 导出 PDF 失败，准备重试 {attempt}/3", flush=True)
+            time.sleep(attempt)
+            continue
+
+        if pdf_path.exists() and pdf_path.stat().st_size > 0:
+            return pdf_path
+
+        print(f"[progress] LibreOffice 未生成有效 PDF，准备重试 {attempt}/3", flush=True)
+        time.sleep(attempt)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("LibreOffice 导出 PDF 失败：未生成有效 PDF 文件。")
 
 
 def ffmpeg_subtitles_filter(path: Path) -> str:
@@ -255,8 +303,7 @@ def export_slides(pptx_path: Path, out_dir: Path) -> list[Path]:
 
     soffice = require_tool("soffice")
     pdftoppm = find_tool("pdftoppm")
-    run([soffice, "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir), str(pptx_path)])
-    pdf_path = pdf_dir / f"{pptx_path.stem}.pdf"
+    pdf_path = convert_pptx_to_pdf(soffice, pptx_path, pdf_dir, out_dir)
     print("[progress] 已导出 PDF，开始渲染幻灯片图片", flush=True)
     if pdftoppm:
         run([pdftoppm, "-png", str(pdf_path), str(img_dir / "slide")])
