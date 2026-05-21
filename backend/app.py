@@ -51,7 +51,7 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
-SCRIPT_MAX_CONCURRENT_JOBS = env_int("SCRIPT_MAX_CONCURRENT_JOBS", 2)
+SCRIPT_MAX_CONCURRENT_JOBS = env_int("SCRIPT_MAX_CONCURRENT_JOBS", 3)
 AI_MAX_CONCURRENT_REQUESTS = env_int("AI_MAX_CONCURRENT_REQUESTS", 2)
 AI_REQUEST_RETRIES = env_int("AI_REQUEST_RETRIES", 4)
 script_job_slots = threading.BoundedSemaphore(SCRIPT_MAX_CONCURRENT_JOBS)

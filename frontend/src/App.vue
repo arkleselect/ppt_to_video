@@ -308,6 +308,7 @@ function createBatchItem(file) {
     pptDownloadName: '',
     estimatedMinutes: null,
     resultKind: '',
+    queuedStart: false,
     error: '',
   }
 }
@@ -393,13 +394,20 @@ function hasBatchCapacity(exceptId = '') {
 }
 
 async function maybeStartNextBatchItem() {
-  if (!batchAutoRun.value) return
+  const hasQueuedWaitingItem = batchItems.value.some((item) => item.queuedStart && item.status === '等待中')
+  if (!batchAutoRun.value && !hasQueuedWaitingItem) return
   while (hasBatchCapacity()) {
-    const nextItem = batchItems.value.find((item) => isBatchAutoRunnableStatus(item.status))
+    const nextItem = batchItems.value.find((item) =>
+      (item.queuedStart && item.status === '等待中')
+      || (batchAutoRun.value && isBatchAutoRunnableStatus(item.status)),
+    )
     if (!nextItem) break
     await startBatchItem(nextItem, { force: true })
   }
-  if (!batchItems.value.some((item) => isBatchAutoRunnableStatus(item.status) || item.statusTone === 'running')) {
+  if (
+    batchAutoRun.value
+    && !batchItems.value.some((item) => isBatchAutoRunnableStatus(item.status) || item.statusTone === 'running')
+  ) {
     batchAutoRun.value = false
   }
 }
@@ -440,10 +448,12 @@ async function startBatchItem(item, options = {}) {
   if (!force && !hasBatchCapacity(item.id)) {
     item.status = '等待中'
     item.statusTone = 'muted'
-    pushBatchLog(item, `当前并发上限为 ${batchConcurrency.value === 'all' ? '全部' : batchConcurrency.value}，等待空位。`, '待处理')
+    item.queuedStart = true
+    pushBatchLog(item, `当前并发上限为 ${batchConcurrency.value === 'all' ? '全部' : batchConcurrency.value}，已加入等待队列，空位释放后会自动开始。`, '待处理')
     batchExpandedId.value = item.id
     return false
   }
+  item.queuedStart = false
   item.error = ''
   item.output = ''
   item.outputDownloadName = ''
