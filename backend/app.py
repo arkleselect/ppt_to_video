@@ -198,6 +198,8 @@ def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4, log_
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": "ppt-to-video/1.0",
         },
         method="POST",
     )
@@ -228,7 +230,11 @@ def open_ai_chat_with_retry(req: url_request.Request, ssl_context: ssl.SSLContex
         try:
             with ai_request_slots:
                 with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
-                    return json.loads(resp.read().decode("utf-8"))
+                    raw = resp.read().decode("utf-8")
+                    payload = json.loads(raw)
+                    if "choices" not in payload:
+                        raise ValueError(f"AI 响应缺少 choices 字段：{raw[:200]}")
+                    return payload
         except Exception as exc:
             last_exc = exc
             if not is_retryable_ai_error(exc) or attempt >= AI_REQUEST_RETRIES:
@@ -904,8 +910,11 @@ def test_ai_settings():
         append_server_log(f"AI 连接测试成功（{user}）。")
         return jsonify({"ok": True, "message": f"连接成功：{message[:40]}"})
     except url_error.HTTPError as exc:
-        append_server_log(f"AI 连接测试失败（{user}）：HTTP {exc.code}", "error")
-        return jsonify({"ok": False, "message": f"连接失败：HTTP {exc.code}。"}), 400
+        response_text = exc.read().decode("utf-8", "replace")
+        short_text = response_text[:180].strip()
+        append_server_log(f"AI 连接测试失败（{user}）：HTTP {exc.code} {short_text}", "error")
+        detail = f" {short_text}" if short_text else ""
+        return jsonify({"ok": False, "message": f"连接失败：HTTP {exc.code}.{detail}"}), 400
     except Exception as exc:
         append_server_log(f"AI 连接测试失败（{user}）：{exc}", "error")
         return jsonify({"ok": False, "message": f"连接失败：{exc}"}), 400
