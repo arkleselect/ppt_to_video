@@ -363,9 +363,15 @@ function pushBatchLog(item, text, state = '进行中') {
 }
 
 function batchStatusClass(item) {
+  const failedStatuses = ['分析失败', '创建失败', '失败', '状态读取失败']
+  const waitingStatuses = ['等待中', '排队中']
+  const runningStatuses = ['分析中', '生成中']
   return {
+    'queue-status': true,
     muted: item.statusTone === 'muted',
-    running: item.statusTone === 'running',
+    running: runningStatuses.includes(item.status),
+    waiting: waitingStatuses.includes(item.status),
+    failed: failedStatuses.includes(item.status),
     done: item.statusTone === 'done',
   }
 }

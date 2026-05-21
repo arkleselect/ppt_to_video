@@ -784,6 +784,44 @@ input:focus {
   line-height: 1.5;
 }
 
+.queue-status {
+  justify-self: start;
+  min-width: 72px;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 253, 249, .78);
+  color: var(--ink-soft);
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.queue-status.running {
+  border-color: rgba(77, 139, 92, .32);
+  background: rgba(77, 139, 92, .14);
+  color: #32633d;
+}
+
+.queue-status.failed {
+  border-color: rgba(188, 82, 75, .32);
+  background: rgba(188, 82, 75, .14);
+  color: #8d332d;
+}
+
+.queue-status.waiting {
+  border-color: rgba(206, 135, 54, .34);
+  background: rgba(206, 135, 54, .16);
+  color: #87521b;
+}
+
+.queue-status.done {
+  border-color: rgba(162, 79, 44, .26);
+  background: rgba(162, 79, 44, .1);
+  color: var(--accent-deep);
+}
+
 .queue-actions {
   display: flex;
   justify-content: flex-end;
