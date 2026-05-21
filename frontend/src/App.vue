@@ -22,6 +22,7 @@ const batchTargetMinutes = ref(40)
 const batchExpandedId = ref('')
 const isBatchStarting = ref(false)
 const batchAutoRun = ref(false)
+const batchConcurrency = ref('3')
 const isDragging = ref(false)
 const isAnalyzing = ref(false)
 const isPreviewing = ref(false)
@@ -124,6 +125,9 @@ let subtitleSettingsMessageTimer = null
 
 const batchDownloadableItems = computed(() =>
   batchItems.value.filter((item) => item.output || item.pptOutput),
+)
+const batchConcurrencyLimit = computed(() =>
+  batchConcurrency.value === 'all' ? Infinity : Number(batchConcurrency.value) || 1,
 )
 
 function loadClientUser() {
@@ -370,18 +374,28 @@ function isBatchRunnableStatus(status) {
   return ['待开始', '待生成', '分析失败', '创建失败', '失败', '已停止', '状态读取失败', '等待中'].includes(status)
 }
 
-function hasRunningBatchItem(exceptId = '') {
-  return batchItems.value.some((item) => item.id !== exceptId && item.statusTone === 'running')
+function isBatchAutoRunnableStatus(status) {
+  return ['待开始', '待生成', '等待中'].includes(status)
+}
+
+function runningBatchCount(exceptId = '') {
+  return batchItems.value.filter((item) => item.id !== exceptId && item.statusTone === 'running').length
+}
+
+function hasBatchCapacity(exceptId = '') {
+  return runningBatchCount(exceptId) < batchConcurrencyLimit.value
 }
 
 async function maybeStartNextBatchItem() {
-  if (!batchAutoRun.value || hasRunningBatchItem()) return
-  const nextItem = batchItems.value.find((item) => isBatchRunnableStatus(item.status))
-  if (!nextItem) {
-    batchAutoRun.value = false
-    return
+  if (!batchAutoRun.value) return
+  while (hasBatchCapacity()) {
+    const nextItem = batchItems.value.find((item) => isBatchAutoRunnableStatus(item.status))
+    if (!nextItem) break
+    await startBatchItem(nextItem, { force: true })
   }
-  await startBatchItem(nextItem, { force: true })
+  if (!batchItems.value.some((item) => isBatchAutoRunnableStatus(item.status) || item.statusTone === 'running')) {
+    batchAutoRun.value = false
+  }
 }
 
 async function analyzeBatchItem(item) {
@@ -417,10 +431,10 @@ async function analyzeBatchItem(item) {
 async function startBatchItem(item, options = {}) {
   const { force = false } = options
   if (item.statusTone === 'running') return false
-  if (!force && hasRunningBatchItem(item.id)) {
+  if (!force && !hasBatchCapacity(item.id)) {
     item.status = '等待中'
     item.statusTone = 'muted'
-    pushBatchLog(item, '当前按串行队列处理，等待前一个任务完成。', '待处理')
+    pushBatchLog(item, `当前并发上限为 ${batchConcurrency.value === 'all' ? '全部' : batchConcurrency.value}，等待空位。`, '待处理')
     batchExpandedId.value = item.id
     return false
   }
@@ -1246,6 +1260,15 @@ watch(activeTab, (value) => {
               <button class="strategy-pill" :class="{ active: batchMode === 'script' }" @click="batchMode = 'script'">
                 批量生成讲稿
               </button>
+            </div>
+            <div class="batch-concurrency">
+              <span>并发数</span>
+              <div class="batch-mode-switch batch-mode-inline">
+                <button class="strategy-pill" :class="{ active: batchConcurrency === '1' }" @click="batchConcurrency = '1'">1</button>
+                <button class="strategy-pill" :class="{ active: batchConcurrency === '2' }" @click="batchConcurrency = '2'">2</button>
+                <button class="strategy-pill" :class="{ active: batchConcurrency === '3' }" @click="batchConcurrency = '3'">3</button>
+                <button class="strategy-pill" :class="{ active: batchConcurrency === 'all' }" @click="batchConcurrency = 'all'">全部</button>
+              </div>
             </div>
             <div v-if="batchMode === 'script' && batchScriptStrategy === 'duration'" class="batch-inline-toggle">
               <span class="duration-label batch-inline-label">

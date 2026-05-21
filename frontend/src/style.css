@@ -709,6 +709,15 @@ input:focus {
   margin-bottom: 0;
 }
 
+.batch-concurrency {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ink-soft);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
 .batch-inline-toggle {
   display: inline-flex;
   align-items: center;
