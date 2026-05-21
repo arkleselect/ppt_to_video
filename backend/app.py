@@ -179,8 +179,53 @@ def build_ssl_context(verify_ssl: bool = True) -> ssl.SSLContext:
     return ssl_context
 
 
+def normalize_ai_base_url(base_url: str) -> str:
+    base_url = base_url.strip().rstrip("/")
+    suffix = "/chat/completions"
+    if base_url.endswith(suffix):
+        return base_url[: -len(suffix)].rstrip("/")
+    return base_url
+
+
+def parse_ai_response(raw: str, request_url: str, content_type: str = "") -> dict:
+    text = raw.strip()
+    if not text:
+        raise ValueError(f"AI 响应为空；实际请求：{request_url}")
+
+    if text.startswith("data:"):
+        for line in text.splitlines():
+            if not line.startswith("data:"):
+                continue
+            data = line.removeprefix("data:").strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            if "choices" in payload:
+                return payload
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        snippet = text[:200].replace("\n", " ")
+        if text.lower().startswith(("<!doctype", "<html")):
+            raise ValueError(
+                "AI 返回的是网页 HTML，不是接口 JSON；通常是 Base URL 填成了站点首页或少了 /v1。"
+                f"实际请求：{request_url}；响应开头：{snippet}"
+            ) from exc
+        raise ValueError(
+            f"AI 返回的内容不是 JSON；实际请求：{request_url}；Content-Type：{content_type or '未知'}；响应开头：{snippet}"
+        ) from exc
+
+    if "choices" not in payload:
+        raise ValueError(f"AI 响应缺少 choices 字段；实际请求：{request_url}；响应开头：{text[:200]}")
+    return payload
+
+
 def ai_chat(settings: dict, messages: list[dict], temperature: float = 0.4, log_prefix: str = "AI") -> str:
-    base_url = settings.get("ai_base_url", "").strip().rstrip("/")
+    base_url = normalize_ai_base_url(settings.get("ai_base_url", ""))
     api_key = settings.get("ai_api_key", "").strip()
     model = settings.get("ai_model", "").strip()
     verify_ssl = bool(settings.get("ai_verify_ssl", True))
@@ -231,10 +276,7 @@ def open_ai_chat_with_retry(req: url_request.Request, ssl_context: ssl.SSLContex
             with ai_request_slots:
                 with url_request.urlopen(req, timeout=120, context=ssl_context) as resp:
                     raw = resp.read().decode("utf-8")
-                    payload = json.loads(raw)
-                    if "choices" not in payload:
-                        raise ValueError(f"AI 响应缺少 choices 字段：{raw[:200]}")
-                    return payload
+                    return parse_ai_response(raw, req.full_url, resp.headers.get("content-type", ""))
         except Exception as exc:
             last_exc = exc
             if not is_retryable_ai_error(exc) or attempt >= AI_REQUEST_RETRIES:
