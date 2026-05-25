@@ -23,6 +23,8 @@ const batchExpandedId = ref('')
 const isBatchStarting = ref(false)
 const batchAutoRun = ref(false)
 const batchConcurrency = ref('3')
+const batchAutoRetry = ref(true)
+const batchMaxAutoRetries = 2
 const isDragging = ref(false)
 const isAnalyzing = ref(false)
 const isPreviewing = ref(false)
@@ -312,6 +314,7 @@ function createBatchItem(file) {
     resultKind: '',
     queuedStart: false,
     queuedRetry: false,
+    autoRetryCount: 0,
     error: '',
   }
 }
@@ -563,6 +566,7 @@ function startBatchPolling(item) {
         stopBatchPolling(item.id)
         item.status = '已完成'
         item.statusTone = 'done'
+        item.autoRetryCount = 0
         if (item.resultKind === 'script') {
           item.pptOutput = data.result?.ppt_output || ''
           item.pptDownloadName = data.result?.ppt_download_name || item.name
@@ -592,6 +596,7 @@ function startBatchPolling(item) {
         item.error = data.logs?.[data.logs.length - 1]?.text || (item.resultKind === 'script' ? '讲稿生成失败' : '视频生成失败')
         item.latestLog = item.error
         batchExpandedId.value = item.id
+        if (await maybeAutoRetryBatchItem(item, item.error)) return
         await maybeStartNextBatchItem()
       }
       if (data.status === 'stopped') {
@@ -701,6 +706,18 @@ async function retryBatchScriptJob(item) {
     await maybeStartNextBatchItem()
     return false
   }
+}
+
+async function maybeAutoRetryBatchItem(item, reason = '') {
+  if (!batchAutoRetry.value || item.resultKind !== 'script' || !item.jobId) return false
+  if (item.autoRetryCount >= batchMaxAutoRetries) return false
+  item.autoRetryCount += 1
+  pushBatchLog(
+    item,
+    `任务失败，自动重试第 ${item.autoRetryCount}/${batchMaxAutoRetries} 次。${reason ? `失败原因：${reason}` : ''}`,
+    '排队中',
+  )
+  return retryBatchScriptJob(item)
 }
 
 function batchOutputUrl(item) {
@@ -1401,6 +1418,18 @@ watch(activeTab, (value) => {
                 <span></span>
               </button>
             </div>
+            <div v-if="batchMode === 'script'" class="batch-inline-toggle">
+              <span class="duration-label batch-inline-label">
+                失败自动重试
+                <span class="tooltip-wrap tooltip-wrap-down">
+                  <CircleHelp :size="15" />
+                  <span class="tooltip">讲稿任务失败后自动复用已生成页面继续重试，最多自动重试 2 次，避免重复消耗已完成页面的 token。</span>
+                </span>
+              </span>
+              <button class="toggle" :class="{ enabled: batchAutoRetry }" @click="batchAutoRetry = !batchAutoRetry">
+                <span></span>
+              </button>
+            </div>
           </div>
           <div class="form">
             <template v-if="batchMode === 'video'">
@@ -1586,6 +1615,7 @@ watch(activeTab, (value) => {
                 <div class="batch-detail-meta">
                   <span>备注字数：{{ item.chars ?? '待分析' }}</span>
                   <span>任务 ID：{{ item.jobId || '尚未创建' }}</span>
+                  <span v-if="item.resultKind === 'script'">自动重试：{{ item.autoRetryCount }}/{{ batchMaxAutoRetries }}</span>
                   <span v-if="item.resultKind === 'script' && item.automatedTargetMinutes">自动化目标：{{ item.automatedTargetMinutes }} 分钟</span>
                   <span v-if="item.resultKind === 'script' && item.estimatedMinutes">预计讲稿时长：{{ item.estimatedMinutes.toFixed(1) }} 分钟</span>
                 </div>
