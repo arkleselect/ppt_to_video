@@ -111,6 +111,12 @@ python3 backend/app.py
 http://127.0.0.1:5050
 ```
 
+讲稿生成并发可通过环境变量调整：
+
+- `SCRIPT_MAX_CONCURRENT_JOBS_PER_USER`：每个用户最多同时执行的讲稿任务数，默认 `3`
+- `SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS`：后端服务全局最多同时执行的讲稿任务数，默认按每用户上限计算，至少 `3`
+- `AI_MAX_CONCURRENT_REQUESTS`：同时调用 AI 接口的请求数，默认 `2`
+
 ### 5. 启动前端
 
 ```bash

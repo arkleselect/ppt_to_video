@@ -718,6 +718,12 @@ input:focus {
   white-space: nowrap;
 }
 
+.batch-concurrency > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .batch-inline-toggle {
   display: inline-flex;
   align-items: center;

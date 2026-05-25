@@ -51,10 +51,16 @@ def env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
-SCRIPT_MAX_CONCURRENT_JOBS = env_int("SCRIPT_MAX_CONCURRENT_JOBS", 3)
+SCRIPT_MAX_CONCURRENT_JOBS_PER_USER = env_int("SCRIPT_MAX_CONCURRENT_JOBS_PER_USER", 3)
+SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS = env_int(
+    "SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS",
+    max(3, SCRIPT_MAX_CONCURRENT_JOBS_PER_USER * 4),
+)
 AI_MAX_CONCURRENT_REQUESTS = env_int("AI_MAX_CONCURRENT_REQUESTS", 2)
 AI_REQUEST_RETRIES = env_int("AI_REQUEST_RETRIES", 4)
-script_job_slots = threading.BoundedSemaphore(SCRIPT_MAX_CONCURRENT_JOBS)
+script_global_job_slots = threading.BoundedSemaphore(SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS)
+script_user_job_slots: dict[str, threading.BoundedSemaphore] = {}
+script_user_job_slots_lock = threading.Lock()
 ai_request_slots = threading.BoundedSemaphore(AI_MAX_CONCURRENT_REQUESTS)
 
 TOKEN_PRICING = {
@@ -515,6 +521,53 @@ def job_log_prefix(kind: str, job_id: str, job: dict | None = None) -> str:
     return f"{kind}任务 {job_id}（{job_user_label(job)}）"
 
 
+def script_user_job_slot(user: str) -> threading.BoundedSemaphore:
+    with script_user_job_slots_lock:
+        slot = script_user_job_slots.get(user)
+        if slot is None:
+            slot = threading.BoundedSemaphore(SCRIPT_MAX_CONCURRENT_JOBS_PER_USER)
+            script_user_job_slots[user] = slot
+        return slot
+
+
+def acquire_script_job_slots(job: dict, job_id: str) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
+    user = job_user_label(job)
+    user_slot = script_user_job_slot(user)
+    waited_user = False
+    waited_global = False
+
+    while True:
+        if not user_slot.acquire(blocking=False):
+            if not waited_user:
+                append_log(
+                    job,
+                    f"当前用户已有讲稿任务在执行，等待个人可用名额（每用户最多并行 {SCRIPT_MAX_CONCURRENT_JOBS_PER_USER} 个）。",
+                    "排队中",
+                )
+                append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待用户并发名额。")
+                waited_user = True
+            user_slot.acquire()
+
+        if script_global_job_slots.acquire(blocking=False):
+            return user_slot, script_global_job_slots
+
+        user_slot.release()
+        if not waited_global:
+            append_log(
+                job,
+                f"服务器讲稿任务已达到全局上限，等待全局可用名额（全局最多并行 {SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS} 个）。",
+                "排队中",
+            )
+            append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待全局并发名额。")
+            waited_global = True
+        script_global_job_slots.acquire()
+
+        if user_slot.acquire(blocking=False):
+            return user_slot, script_global_job_slots
+
+        script_global_job_slots.release()
+
+
 def append_script_progress(job: dict | None, job_id: str | None, text: str, state: str = "进行中"):
     if job is not None:
         append_log(job, text, state)
@@ -648,15 +701,16 @@ def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, 
 
 def run_script_job(job_id: str, src: Path, payload: dict):
     job = jobs[job_id]
+    user_slot = None
+    global_slot = None
     append_log(job, "讲稿生成任务已进入后端队列。")
     append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已进入队列。")
-    acquired = script_job_slots.acquire(blocking=False)
-    if not acquired:
-        append_log(job, f"当前已有讲稿任务在执行，等待可用名额（最大并行 {SCRIPT_MAX_CONCURRENT_JOBS} 个）。", "排队中")
-        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待执行名额。")
-        script_job_slots.acquire()
+    user_slot, global_slot = acquire_script_job_slots(job, job_id)
     job["status"] = "running"
-    append_log(job, "讲稿生成任务已启动。")
+    append_log(
+        job,
+        f"讲稿生成任务已启动（每用户最多并行 {SCRIPT_MAX_CONCURRENT_JOBS_PER_USER} 个；全局最多并行 {SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS} 个）。",
+    )
     append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已启动。")
     try:
         slide_count = len(extract_slide_texts(src))
@@ -674,7 +728,10 @@ def run_script_job(job_id: str, src: Path, payload: dict):
         append_log(job, f"讲稿生成失败：{exc}", "失败")
         append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 失败：{exc}", "error")
     finally:
-        script_job_slots.release()
+        if global_slot is not None:
+            global_slot.release()
+        if user_slot is not None:
+            user_slot.release()
 
 
 async def chinese_voices() -> list[dict]:

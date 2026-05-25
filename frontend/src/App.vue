@@ -1278,7 +1278,13 @@ watch(activeTab, (value) => {
               </button>
             </div>
             <div class="batch-concurrency">
-              <span>并发数</span>
+              <span>
+                并发数
+                <span class="tooltip-wrap tooltip-wrap-down">
+                  <CircleHelp :size="15" />
+                  <span class="tooltip">这里限制当前浏览器批量启动数量；后端讲稿任务默认每用户最多并行 3 个，同时保留服务器全局上限，超出会进入排队中。</span>
+                </span>
+              </span>
               <div class="batch-mode-switch batch-mode-inline">
                 <button class="strategy-pill" :class="{ active: batchConcurrency === '1' }" @click="batchConcurrency = '1'">1</button>
                 <button class="strategy-pill" :class="{ active: batchConcurrency === '2' }" @click="batchConcurrency = '2'">2</button>
