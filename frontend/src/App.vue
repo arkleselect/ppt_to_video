@@ -91,6 +91,7 @@ const batchScriptStyle = ref('培训讲师 · 稳妥清晰')
 const batchScriptEnrichment = ref('light')
 const batchShortNoteThreshold = ref(180)
 const batchScriptTargetMinutes = ref(40)
+const batchScriptAutoPageMultiplier = ref(2)
 const batchAutoExpandDuration = ref(true)
 const isScriptAnalyzing = ref(false)
 const isScriptGenerating = ref(false)
@@ -307,8 +308,10 @@ function createBatchItem(file) {
     pptOutput: '',
     pptDownloadName: '',
     estimatedMinutes: null,
+    automatedTargetMinutes: null,
     resultKind: '',
     queuedStart: false,
+    queuedRetry: false,
     error: '',
   }
 }
@@ -393,6 +396,12 @@ function hasBatchCapacity(exceptId = '') {
   return runningBatchCount(exceptId) < batchConcurrencyLimit.value
 }
 
+function automatedBatchTargetMinutes(item) {
+  const slides = Number(item.slides) || 1
+  const multiplier = Math.max(0.1, Number(batchScriptAutoPageMultiplier.value) || 2)
+  return Math.max(1, Math.round(slides * multiplier))
+}
+
 async function maybeStartNextBatchItem() {
   const hasQueuedWaitingItem = batchItems.value.some((item) => item.queuedStart && item.status === '等待中')
   if (!batchAutoRun.value && !hasQueuedWaitingItem) return
@@ -402,6 +411,11 @@ async function maybeStartNextBatchItem() {
       || (batchAutoRun.value && isBatchAutoRunnableStatus(item.status)),
     )
     if (!nextItem) break
+    if (nextItem.queuedRetry) {
+      nextItem.queuedRetry = false
+      await retryBatchScriptJob(nextItem)
+      continue
+    }
     await startBatchItem(nextItem, { force: true })
   }
   if (
@@ -454,16 +468,25 @@ async function startBatchItem(item, options = {}) {
     return false
   }
   item.queuedStart = false
+  item.queuedRetry = false
   item.error = ''
   item.output = ''
   item.outputDownloadName = ''
   item.pptOutput = ''
   item.pptDownloadName = ''
+  item.automatedTargetMinutes = null
   item.resultKind = batchMode.value
   const ready = await analyzeBatchItem(item)
   if (!ready) {
     await maybeStartNextBatchItem()
     return false
+  }
+  const scriptTargetMinutes = batchScriptStrategy.value === 'auto'
+    ? automatedBatchTargetMinutes(item)
+    : Number(batchScriptTargetMinutes.value) || 40
+  if (batchMode.value === 'script' && batchScriptStrategy.value === 'auto') {
+    item.automatedTargetMinutes = scriptTargetMinutes
+    pushBatchLog(item, `自动化策略：${item.slides || 0} 页 × ${Number(batchScriptAutoPageMultiplier.value) || 2} 倍，目标讲稿时长约 ${scriptTargetMinutes} 分钟。`)
   }
   item.status = '排队中'
   item.statusTone = 'running'
@@ -474,11 +497,17 @@ async function startBatchItem(item, options = {}) {
       ? {
           upload_id: item.uploadId,
           user_id: currentUser.value,
-          strategy: batchScriptStrategy.value,
+          strategy: batchScriptStrategy.value === 'auto' ? 'duration' : batchScriptStrategy.value,
           style: batchScriptStyle.value,
           enrichment: batchScriptEnrichment.value,
           short_threshold: Number(batchShortNoteThreshold.value) || 180,
-          target_minutes: Number(batchScriptTargetMinutes.value) || 40,
+          target_minutes: scriptTargetMinutes,
+          automation: batchScriptStrategy.value === 'auto'
+            ? {
+                page_multiplier: Number(batchScriptAutoPageMultiplier.value) || 2,
+                slide_count: Number(item.slides) || 0,
+              }
+            : null,
           auto_expand_duration: batchAutoExpandDuration.value,
         }
       : {
@@ -593,6 +622,7 @@ async function startAllBatchItems() {
       if (!isBatchRunnableStatus(item.status)) {
         continue
       }
+      item.queuedRetry = item.resultKind === 'script' && item.jobId && ['失败', '重试失败', '已停止'].includes(item.status)
       if (item.status !== '等待中') {
         item.status = '等待中'
         item.statusTone = 'muted'
@@ -619,6 +649,13 @@ async function stopBatchItem(item) {
   try {
     await fetch(`/api/jobs/${item.jobId}/stop`, { method: 'POST' }).then(readJson)
   } catch {}
+  if (item.resultKind === 'script') {
+    item.status = '停止中'
+    item.statusTone = 'running'
+    pushBatchLog(item, '已请求停止讲稿生成，当前页完成后会停止并保留草稿。', '已停止')
+    startBatchPolling(item)
+    return
+  }
   stopBatchPolling(item.id)
   item.status = '已停止'
   item.statusTone = 'muted'
@@ -634,21 +671,82 @@ async function stopAllBatchItems() {
   )
 }
 
+async function retryBatchScriptJob(item) {
+  if (!item.jobId || item.resultKind !== 'script') {
+    return startBatchItem(item)
+  }
+  item.status = '排队中'
+  item.statusTone = 'running'
+  item.error = ''
+  item.output = ''
+  item.outputDownloadName = ''
+  item.pptOutput = ''
+  item.pptDownloadName = ''
+  item.queuedRetry = false
+  item.queuedStart = false
+  pushBatchLog(item, '已发起重试，将复用已生成页面并继续未完成页面。', '排队中')
+  try {
+    await fetch(`/api/script/jobs/${item.jobId}/retry`, {
+      method: 'POST',
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ user_id: currentUser.value }),
+    }).then(readJson)
+    startBatchPolling(item)
+    return true
+  } catch (error) {
+    item.error = error.message || '重试失败'
+    item.status = '重试失败'
+    item.statusTone = 'muted'
+    pushBatchLog(item, item.error, '失败')
+    await maybeStartNextBatchItem()
+    return false
+  }
+}
+
 function batchOutputUrl(item) {
   const filename = item.resultKind === 'script' ? item.pptOutput : item.output
   const downloadName = item.resultKind === 'script' ? item.pptDownloadName : item.outputDownloadName
   return downloadLink(filename, downloadName)
 }
 
-function downloadAllBatchOutputs() {
-  batchDownloadableItems.value.forEach((item) => {
+function batchOutputFilePayload(item) {
+  return {
+    filename: item.resultKind === 'script' ? item.pptOutput : item.output,
+    download_name: item.resultKind === 'script' ? item.pptDownloadName : item.outputDownloadName,
+  }
+}
+
+async function downloadAllBatchOutputs() {
+  const files = batchDownloadableItems.value
+    .map(batchOutputFilePayload)
+    .filter((item) => item.filename)
+  if (!files.length) return
+  try {
+    const response = await fetch('/api/download/batch-zip', {
+      method: 'POST',
+      headers: userHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ files }),
+    })
+    if (!response.ok) {
+      await readJson(response)
+      return
+    }
+    const blob = await response.blob()
+    const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
-    link.href = batchOutputUrl(item)
-    link.download = ''
+    link.href = url
+    link.download = `批量下载-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.zip`
     document.body.appendChild(link)
     link.click()
     link.remove()
-  })
+    URL.revokeObjectURL(url)
+  } catch (error) {
+    const target = batchDownloadableItems.value[0]
+    if (target) {
+      pushBatchLog(target, error.message || '打包下载失败', '失败')
+      batchExpandedId.value = target.id
+    }
+  }
 }
 
 function setScriptFile(file) {
@@ -1271,10 +1369,10 @@ watch(activeTab, (value) => {
           <div class="batch-mode-bar">
             <div class="batch-mode-switch">
               <button class="strategy-pill" :class="{ active: batchMode === 'video' }" @click="batchMode = 'video'">
-                批量生成视频
+                视频
               </button>
               <button class="strategy-pill" :class="{ active: batchMode === 'script' }" @click="batchMode = 'script'">
-                批量生成讲稿
+                讲稿
               </button>
             </div>
             <div class="batch-concurrency">
@@ -1292,7 +1390,7 @@ watch(activeTab, (value) => {
                 <button class="strategy-pill" :class="{ active: batchConcurrency === 'all' }" @click="batchConcurrency = 'all'">全部</button>
               </div>
             </div>
-            <div v-if="batchMode === 'script' && batchScriptStrategy === 'duration'" class="batch-inline-toggle">
+            <div v-if="batchMode === 'script' && ['duration', 'auto'].includes(batchScriptStrategy)" class="batch-inline-toggle">
               <span class="duration-label batch-inline-label">
                 自动补写
                 <span class="tooltip-wrap tooltip-wrap-down">
@@ -1383,9 +1481,12 @@ watch(activeTab, (value) => {
                   <button class="strategy-pill" :class="{ active: batchScriptStrategy === 'duration' }" @click="batchScriptStrategy = 'duration'">
                     按目标时长生成
                   </button>
+                  <button class="strategy-pill" :class="{ active: batchScriptStrategy === 'auto' }" @click="batchScriptStrategy = 'auto'">
+                    自动化
+                  </button>
                 </div>
               </label>
-              <div class="batch-script-row" :class="{ single: !['short', 'duration'].includes(batchScriptStrategy) }">
+              <div class="batch-script-row" :class="{ single: !['short', 'duration', 'auto'].includes(batchScriptStrategy) }">
                 <label>
                   <span>讲解风格</span>
                   <input v-model="batchScriptStyle" />
@@ -1402,6 +1503,13 @@ watch(activeTab, (value) => {
                   <div class="duration-input">
                     <input v-model="batchScriptTargetMinutes" type="number" min="1" step="1" />
                     <span>分钟</span>
+                  </div>
+                </div>
+                <div v-if="batchScriptStrategy === 'auto'">
+                  <span>页数倍数</span>
+                  <div class="duration-input">
+                    <input v-model="batchScriptAutoPageMultiplier" type="number" min="0.1" step="0.1" />
+                    <span>倍</span>
                   </div>
                 </div>
               </div>
@@ -1469,6 +1577,7 @@ watch(activeTab, (value) => {
                     {{ item.resultKind === 'script' ? '下载 PPT' : '下载视频' }}
                   </a>
                   <button v-else-if="item.statusTone === 'running'" class="danger compact" @click="stopBatchItem(item)">停止</button>
+                  <button v-else-if="item.resultKind === 'script' && item.jobId && ['失败', '重试失败'].includes(item.status)" class="utility compact" @click="retryBatchScriptJob(item)">重试</button>
                   <button v-else class="utility compact" @click="startBatchItem(item)">开始</button>
                   <button class="utility compact" @click="batchExpandedId = batchExpandedId === item.id ? '' : item.id">详情</button>
                   <button class="utility compact" @click="removeBatchItem(item.id)">移除</button>
@@ -1478,6 +1587,7 @@ watch(activeTab, (value) => {
                 <div class="batch-detail-meta">
                   <span>备注字数：{{ item.chars ?? '待分析' }}</span>
                   <span>任务 ID：{{ item.jobId || '尚未创建' }}</span>
+                  <span v-if="item.resultKind === 'script' && item.automatedTargetMinutes">自动化目标：{{ item.automatedTargetMinutes }} 分钟</span>
                   <span v-if="item.resultKind === 'script' && item.estimatedMinutes">预计讲稿时长：{{ item.estimatedMinutes.toFixed(1) }} 分钟</span>
                 </div>
                 <div class="batch-log-list">

@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime
 from collections import deque
 from pathlib import Path
@@ -62,6 +63,11 @@ script_global_job_slots = threading.BoundedSemaphore(SCRIPT_GLOBAL_MAX_CONCURREN
 script_user_job_slots: dict[str, threading.BoundedSemaphore] = {}
 script_user_job_slots_lock = threading.Lock()
 ai_request_slots = threading.BoundedSemaphore(AI_MAX_CONCURRENT_REQUESTS)
+
+
+class ScriptJobStopped(Exception):
+    pass
+
 
 TOKEN_PRICING = {
     "input_per_million": 2.5,
@@ -535,6 +541,7 @@ def acquire_script_job_slots(job: dict, job_id: str) -> tuple[threading.BoundedS
     user_slot = script_user_job_slot(user)
 
     while True:
+        raise_if_script_stopped(job)
         if not user_slot.acquire(blocking=False):
             append_log(
                 job,
@@ -542,7 +549,8 @@ def acquire_script_job_slots(job: dict, job_id: str) -> tuple[threading.BoundedS
                 "排队中",
             )
             append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待用户并发名额。")
-            user_slot.acquire()
+            while not user_slot.acquire(timeout=0.5):
+                raise_if_script_stopped(job)
 
         if script_global_job_slots.acquire(blocking=False):
             return user_slot, script_global_job_slots
@@ -554,10 +562,9 @@ def acquire_script_job_slots(job: dict, job_id: str) -> tuple[threading.BoundedS
             "排队中",
         )
         append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待全局并发名额。")
-        script_global_job_slots.acquire()
+        while not script_global_job_slots.acquire(timeout=0.5):
+            raise_if_script_stopped(job)
         script_global_job_slots.release()
-
-        time.sleep(0.05)
 
 
 def append_script_progress(job: dict | None, job_id: str | None, text: str, state: str = "进行中"):
@@ -565,6 +572,11 @@ def append_script_progress(job: dict | None, job_id: str | None, text: str, stat
         append_log(job, text, state)
     prefix = f"{job_log_prefix('讲稿', job_id, job)}：" if job_id else ""
     append_server_log(f"{prefix}{text}", "error" if state == "失败" else "info")
+
+
+def raise_if_script_stopped(job: dict | None):
+    if job and job.get("stop_requested"):
+        raise ScriptJobStopped()
 
 
 def client_filename(filename: str | None, fallback: str) -> str:
@@ -606,6 +618,57 @@ def download_name_for_upload(path: Path, suffix: str | None = None) -> str:
     return f"{stem}{suffix}"
 
 
+def unique_zip_member_name(used_names: set[str], folder: str, filename: str) -> str:
+    safe_name = client_filename(filename, "download")
+    path = Path(safe_name)
+    stem = path.stem or "download"
+    suffix = path.suffix
+    candidate = f"{folder}/{safe_name}"
+    counter = 2
+    while candidate in used_names:
+        candidate = f"{folder}/{stem}-{counter}{suffix}"
+        counter += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def script_draft_path(job_id: str | None) -> Path | None:
+    return JOB_DIR / f"script-draft-{job_id}.json" if job_id else None
+
+
+def load_script_draft(job_id: str | None, expected_slide_count: int) -> list[str]:
+    draft_path = script_draft_path(job_id)
+    if not draft_path or not draft_path.exists():
+        return [""] * expected_slide_count
+    try:
+        payload = json.loads(draft_path.read_text(encoding="utf-8"))
+        scripts = payload.get("scripts") if isinstance(payload, dict) else None
+        if not isinstance(scripts, list):
+            return [""] * expected_slide_count
+        normalized = [str(script or "") for script in scripts[:expected_slide_count]]
+        return normalized + [""] * max(0, expected_slide_count - len(normalized))
+    except Exception:
+        return [""] * expected_slide_count
+
+
+def save_script_draft(job_id: str | None, scripts: list[str]):
+    draft_path = script_draft_path(job_id)
+    if not draft_path:
+        return
+    draft_path.write_text(
+        json.dumps(
+            {
+                "updated_at": datetime.now().isoformat(timespec="seconds"),
+                "completed": sum(1 for script in scripts if script.strip()),
+                "scripts": scripts,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
 def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, job_id: str | None = None) -> dict:
     settings = load_user_settings(job_user_label(job))
     strategy = payload.get("strategy", "short")
@@ -620,9 +683,25 @@ def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, 
     target_chars_per_slide = None
     if strategy == "duration" and slide_texts:
         target_chars_per_slide = max(80, int(target_minutes * 264 / len(slide_texts)))
+        automation = payload.get("automation") if isinstance(payload.get("automation"), dict) else None
+        if automation:
+            multiplier = automation.get("page_multiplier") or 2
+            append_script_progress(
+                job,
+                job_id,
+                f"自动化目标：{len(slide_texts)} 页 × {multiplier} 倍，目标讲稿时长约 {target_minutes:.0f} 分钟。",
+            )
 
-    scripts = []
+    scripts = load_script_draft(job_id, len(slide_texts))
+    reused_count = sum(1 for script in scripts if script.strip())
+    if reused_count:
+        append_script_progress(job, job_id, f"检测到已生成草稿 {reused_count}/{len(slide_texts)} 页，本次将从未完成页面继续。")
+
     for idx, slide_text in enumerate(slide_texts, start=1):
+        raise_if_script_stopped(job)
+        if scripts[idx - 1].strip():
+            append_script_progress(job, job_id, f"复用第 {idx}/{len(slide_texts)} 页已生成讲稿。")
+            continue
         note = notes[idx - 1] if idx - 1 < len(notes) else ""
         if strategy == "short" and len(re.sub(r"\s+", "", note)) >= short_threshold:
             script = note
@@ -632,12 +711,21 @@ def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, 
                 script_prompt(strategy, style, enrichment, idx, slide_text, note, target_chars_per_slide),
                 log_prefix=job_log_prefix("讲稿", job_id, job) if job_id else "讲稿",
             )
-        scripts.append(script)
+        scripts[idx - 1] = script
+        save_script_draft(job_id, scripts)
         append_script_progress(job, job_id, f"已生成第 {idx}/{len(slide_texts)} 页讲稿。")
 
     expansion_applied = False
     estimated_minutes = estimate_minutes_from_scripts(scripts)
-    if strategy == "duration" and auto_expand_duration and should_expand_duration(target_minutes, estimated_minutes):
+    skip_resume_expansion = reused_count == len(slide_texts) and reused_count > 0
+    if strategy == "duration" and auto_expand_duration and skip_resume_expansion:
+        append_script_progress(job, job_id, "已复用完整草稿，跳过自动补写，避免重试时重复扩写已补写页面。")
+    if (
+        strategy == "duration"
+        and auto_expand_duration
+        and not skip_resume_expansion
+        and should_expand_duration(target_minutes, estimated_minutes)
+    ):
         append_script_progress(
             job,
             job_id,
@@ -648,6 +736,7 @@ def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, 
         if expandable_indices and missing_chars > 0:
             extra_per_page = max(80, missing_chars // len(expandable_indices))
             for turn, idx in enumerate(expandable_indices, start=1):
+                raise_if_script_stopped(job)
                 note = notes[idx] if idx < len(notes) else ""
                 expanded = ai_chat(
                     settings,
@@ -663,6 +752,7 @@ def generate_scripts_payload(src: Path, payload: dict, job: dict | None = None, 
                     log_prefix=job_log_prefix("讲稿", job_id, job) if job_id else "讲稿",
                 )
                 scripts[idx] = expanded
+                save_script_draft(job_id, scripts)
                 append_script_progress(job, job_id, f"已补写第 {turn}/{len(expandable_indices)} 个扩写页面（第 {idx + 1} 页）。")
             estimated_minutes = estimate_minutes_from_scripts(scripts)
             expansion_applied = True
@@ -697,14 +787,15 @@ def run_script_job(job_id: str, src: Path, payload: dict):
     global_slot = None
     append_log(job, "讲稿生成任务已进入后端队列。")
     append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已进入队列。")
-    user_slot, global_slot = acquire_script_job_slots(job, job_id)
-    job["status"] = "running"
-    append_log(
-        job,
-        f"讲稿生成任务已启动（每用户最多并行 {SCRIPT_MAX_CONCURRENT_JOBS_PER_USER} 个；全局最多并行 {SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS} 个）。",
-    )
-    append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已启动。")
     try:
+        user_slot, global_slot = acquire_script_job_slots(job, job_id)
+        raise_if_script_stopped(job)
+        job["status"] = "running"
+        append_log(
+            job,
+            f"讲稿生成任务已启动（每用户最多并行 {SCRIPT_MAX_CONCURRENT_JOBS_PER_USER} 个；全局最多并行 {SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS} 个）。",
+        )
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已启动。")
         slide_count = len(extract_slide_texts(src))
         if slide_count:
             append_log(job, f"已识别 {slide_count} 页，开始逐页生成讲稿。")
@@ -715,6 +806,10 @@ def run_script_job(job_id: str, src: Path, payload: dict):
         job["status"] = "done"
         append_log(job, "讲稿生成完成。", "完成")
         append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已完成。")
+    except ScriptJobStopped:
+        job["status"] = "stopped"
+        append_log(job, "讲稿生成已停止，已保留当前页级草稿。", "已停止")
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已停止。")
     except Exception as exc:
         job["status"] = "error"
         append_log(job, f"讲稿生成失败：{exc}", "失败")
@@ -724,6 +819,13 @@ def run_script_job(job_id: str, src: Path, payload: dict):
             global_slot.release()
         if user_slot is not None:
             user_slot.release()
+
+
+def start_script_job_thread(job_id: str):
+    job = jobs[job_id]
+    src = UPLOAD_DIR / job["upload_id"]
+    thread = threading.Thread(target=run_script_job, args=(job_id, src, job.get("payload") or {}), daemon=True)
+    thread.start()
 
 
 async def chinese_voices() -> list[dict]:
@@ -810,13 +912,39 @@ def script_generate():
         if not src.exists():
             return jsonify({"error": "上传文件不存在"}), 404
         job_id = uuid.uuid4().hex[:10]
-        jobs[job_id] = {"status": "queued", "logs": [], "kind": "script", "user": client_user_label(payload.get("user_id"))}
-        thread = threading.Thread(target=run_script_job, args=(job_id, src, payload), daemon=True)
-        thread.start()
+        jobs[job_id] = {
+            "status": "queued",
+            "logs": [],
+            "kind": "script",
+            "user": client_user_label(payload.get("user_id")),
+            "upload_id": src.name,
+            "payload": payload,
+        }
+        start_script_job_thread(job_id)
         return jsonify({"job_id": job_id})
     except Exception as exc:
         append_server_log(f"讲稿生成失败：{exc}", "error")
         return jsonify({"error": str(exc)}), 500
+
+
+@app.post("/api/script/jobs/<job_id>/retry")
+def retry_script_job(job_id: str):
+    job = jobs.get(job_id)
+    if not job or job.get("kind") != "script":
+        return jsonify({"error": "讲稿任务不存在"}), 404
+    if job.get("status") in {"queued", "running"}:
+        return jsonify({"error": "任务仍在执行或排队中"}), 409
+    src = UPLOAD_DIR / str(job.get("upload_id") or "")
+    if not src.exists():
+        return jsonify({"error": "上传文件不存在，无法重试"}), 404
+
+    job["status"] = "queued"
+    job["stop_requested"] = False
+    job.pop("result", None)
+    append_log(job, "已发起重试，将复用已生成页面并继续未完成页面。", "排队中")
+    append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 已发起断点重试。")
+    start_script_job_thread(job_id)
+    return jsonify({"job_id": job_id, "status": job["status"]})
 
 
 @app.post("/api/preview")
@@ -928,6 +1056,11 @@ def stop_job(job_id: str):
     job = jobs.get(job_id)
     if not job:
         return jsonify({"error": "任务不存在"}), 404
+    if job.get("kind") == "script":
+        job["stop_requested"] = True
+        append_log(job, "收到停止请求，当前页完成后将停止讲稿生成。", "已停止")
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 收到停止请求。")
+        return jsonify({"status": job.get("status", "queued")})
     proc = job.get("process")
     if proc and proc.poll() is None:
         proc.terminate()
@@ -1016,6 +1149,42 @@ def download(filename: str):
     path = JOB_DIR / Path(filename).name
     download_name = request.args.get("name") or path.name
     return send_file(path, as_attachment=True, download_name=download_name)
+
+
+@app.post("/api/download/batch-zip")
+def download_batch_zip():
+    payload = request.get_json(force=True)
+    files = payload.get("files") if isinstance(payload, dict) else None
+    if not isinstance(files, list) or not files:
+        return jsonify({"error": "没有可打包的文件"}), 400
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    folder_name = f"batch-download-{timestamp}"
+    zip_name = f"{folder_name}-{uuid.uuid4().hex[:8]}.zip"
+    zip_path = JOB_DIR / zip_name
+    used_names: set[str] = set()
+    packed_count = 0
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in files:
+            if not isinstance(item, dict):
+                continue
+            source_name = Path(str(item.get("filename") or "")).name
+            if not source_name:
+                continue
+            source_path = JOB_DIR / source_name
+            if not source_path.exists() or not source_path.is_file():
+                continue
+            download_name = item.get("download_name") or source_path.name
+            member_name = unique_zip_member_name(used_names, folder_name, str(download_name))
+            archive.write(source_path, member_name)
+            packed_count += 1
+
+    if packed_count == 0:
+        zip_path.unlink(missing_ok=True)
+        return jsonify({"error": "没有找到可打包的文件"}), 404
+
+    return send_file(zip_path, as_attachment=True, download_name=f"{folder_name}.zip")
 
 
 if __name__ == "__main__":
