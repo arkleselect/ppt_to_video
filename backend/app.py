@@ -533,39 +533,31 @@ def script_user_job_slot(user: str) -> threading.BoundedSemaphore:
 def acquire_script_job_slots(job: dict, job_id: str) -> tuple[threading.BoundedSemaphore, threading.BoundedSemaphore]:
     user = job_user_label(job)
     user_slot = script_user_job_slot(user)
-    waited_user = False
-    waited_global = False
 
     while True:
         if not user_slot.acquire(blocking=False):
-            if not waited_user:
-                append_log(
-                    job,
-                    f"当前用户已有讲稿任务在执行，等待个人可用名额（每用户最多并行 {SCRIPT_MAX_CONCURRENT_JOBS_PER_USER} 个）。",
-                    "排队中",
-                )
-                append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待用户并发名额。")
-                waited_user = True
+            append_log(
+                job,
+                f"当前用户已有讲稿任务在执行，等待个人可用名额（每用户最多并行 {SCRIPT_MAX_CONCURRENT_JOBS_PER_USER} 个）。",
+                "排队中",
+            )
+            append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待用户并发名额。")
             user_slot.acquire()
 
         if script_global_job_slots.acquire(blocking=False):
             return user_slot, script_global_job_slots
 
         user_slot.release()
-        if not waited_global:
-            append_log(
-                job,
-                f"服务器讲稿任务已达到全局上限，等待全局可用名额（全局最多并行 {SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS} 个）。",
-                "排队中",
-            )
-            append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待全局并发名额。")
-            waited_global = True
+        append_log(
+            job,
+            f"服务器讲稿任务已达到全局上限，等待全局可用名额（全局最多并行 {SCRIPT_GLOBAL_MAX_CONCURRENT_JOBS} 个）。",
+            "排队中",
+        )
+        append_server_log(f"{job_log_prefix('讲稿', job_id, job)} 等待全局并发名额。")
         script_global_job_slots.acquire()
-
-        if user_slot.acquire(blocking=False):
-            return user_slot, script_global_job_slots
-
         script_global_job_slots.release()
+
+        time.sleep(0.05)
 
 
 def append_script_progress(job: dict | None, job_id: str | None, text: str, state: str = "进行中"):
