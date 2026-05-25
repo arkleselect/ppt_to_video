@@ -128,7 +128,7 @@ const batchDownloadableItems = computed(() =>
   batchItems.value.filter((item) => item.output || item.pptOutput),
 )
 const batchConcurrencyLimit = computed(() =>
-  batchConcurrency.value === 'all' ? Infinity : Number(batchConcurrency.value) || 1,
+  Number(batchConcurrency.value) || 1,
 )
 
 function loadClientUser() {
@@ -463,7 +463,7 @@ async function startBatchItem(item, options = {}) {
     item.status = '等待中'
     item.statusTone = 'muted'
     item.queuedStart = true
-    pushBatchLog(item, `当前并发上限为 ${batchConcurrency.value === 'all' ? '全部' : batchConcurrency.value}，已加入等待队列，空位释放后会自动开始。`, '待处理')
+    pushBatchLog(item, `当前并发上限为 ${batchConcurrency.value}，已加入等待队列，空位释放后会自动开始。`, '待处理')
     batchExpandedId.value = item.id
     return false
   }
@@ -1387,7 +1387,6 @@ watch(activeTab, (value) => {
                 <button class="strategy-pill" :class="{ active: batchConcurrency === '1' }" @click="batchConcurrency = '1'">1</button>
                 <button class="strategy-pill" :class="{ active: batchConcurrency === '2' }" @click="batchConcurrency = '2'">2</button>
                 <button class="strategy-pill" :class="{ active: batchConcurrency === '3' }" @click="batchConcurrency = '3'">3</button>
-                <button class="strategy-pill" :class="{ active: batchConcurrency === 'all' }" @click="batchConcurrency = 'all'">全部</button>
               </div>
             </div>
             <div v-if="batchMode === 'script' && ['duration', 'auto'].includes(batchScriptStrategy)" class="batch-inline-toggle">
