@@ -691,11 +691,19 @@ input:focus {
 }
 
 .batch-mode-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  align-items: end;
   gap: 16px;
   margin: 0 0 16px;
+}
+
+.batch-control-group {
+  display: grid;
+  gap: 8px;
+  align-content: end;
+  color: var(--ink-soft);
+  font-size: 14px;
 }
 
 .batch-mode-switch {
@@ -718,11 +726,6 @@ input:focus {
 }
 
 .batch-concurrency {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--ink-soft);
-  font-size: 14px;
   white-space: nowrap;
 }
 
@@ -733,10 +736,11 @@ input:focus {
 }
 
 .batch-inline-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 12px;
-  justify-content: flex-end;
+  grid-auto-flow: column;
+  gap: 10px;
+  justify-content: start;
   white-space: nowrap;
 }
 

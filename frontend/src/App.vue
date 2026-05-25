@@ -1449,15 +1449,18 @@ watch(activeTab, (value) => {
         <article class="card batch-settings">
           <h2>批量设置</h2>
           <div class="batch-mode-bar">
-            <div class="batch-mode-switch">
-              <button class="strategy-pill" :class="{ active: batchMode === 'video' }" @click="batchMode = 'video'">
-                视频
-              </button>
-              <button class="strategy-pill" :class="{ active: batchMode === 'script' }" @click="batchMode = 'script'">
-                讲稿
-              </button>
+            <div class="batch-control-group">
+              <span>类型</span>
+              <div class="batch-mode-switch batch-mode-inline">
+                <button class="strategy-pill" :class="{ active: batchMode === 'video' }" @click="batchMode = 'video'">
+                  视频
+                </button>
+                <button class="strategy-pill" :class="{ active: batchMode === 'script' }" @click="batchMode = 'script'">
+                  讲稿
+                </button>
+              </div>
             </div>
-            <div class="batch-concurrency">
+            <div class="batch-control-group batch-concurrency">
               <span>
                 并发数
                 <span class="tooltip-wrap tooltip-wrap-down">
@@ -1471,7 +1474,7 @@ watch(activeTab, (value) => {
                 <button class="strategy-pill" :class="{ active: batchConcurrency === '3' }" @click="batchConcurrency = '3'">3</button>
               </div>
             </div>
-            <div v-if="batchMode === 'script' && ['duration', 'auto'].includes(batchScriptStrategy)" class="batch-inline-toggle">
+            <div v-if="batchMode === 'script' && ['duration', 'auto'].includes(batchScriptStrategy)" class="batch-control-group batch-inline-toggle">
               <span class="duration-label batch-inline-label">
                 自动补写
                 <span class="tooltip-wrap tooltip-wrap-down">
@@ -1483,7 +1486,7 @@ watch(activeTab, (value) => {
                 <span></span>
               </button>
             </div>
-            <div v-if="batchMode === 'script'" class="batch-inline-toggle">
+            <div v-if="batchMode === 'script'" class="batch-control-group batch-inline-toggle">
               <span class="duration-label batch-inline-label">
                 失败自动重试
                 <span class="tooltip-wrap tooltip-wrap-down">
