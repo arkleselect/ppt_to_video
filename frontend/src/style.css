@@ -709,6 +709,14 @@ input:focus {
   margin-bottom: 0;
 }
 
+.batch-directory-bar {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
 .batch-concurrency {
   display: inline-flex;
   align-items: center;
@@ -770,7 +778,7 @@ input:focus {
 
 .queue-row {
   display: grid;
-  grid-template-columns: 1.5fr .45fr .7fr auto;
+  grid-template-columns: 1.5fr .45fr .45fr .7fr auto;
   gap: 16px;
   align-items: center;
   padding: 14px 0;

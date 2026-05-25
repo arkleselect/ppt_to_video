@@ -25,6 +25,8 @@ const batchAutoRun = ref(false)
 const batchConcurrency = ref('3')
 const batchAutoRetry = ref(true)
 const batchMaxAutoRetries = 2
+const batchActiveGroupId = ref(1)
+const batchGroupCounter = ref(1)
 const isDragging = ref(false)
 const isAnalyzing = ref(false)
 const isPreviewing = ref(false)
@@ -132,6 +134,20 @@ const batchDownloadableItems = computed(() =>
 const batchConcurrencyLimit = computed(() =>
   Number(batchConcurrency.value) || 1,
 )
+const batchActiveGroupName = computed(() => batchGroupName(batchActiveGroupId.value))
+const batchGroups = computed(() => {
+  const groups = new Map([[batchActiveGroupId.value, batchActiveGroupName.value]])
+  batchItems.value.forEach((item) => {
+    groups.set(item.batchGroupId || 1, item.batchGroupName || batchGroupName(item.batchGroupId || 1))
+  })
+  return [...groups.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([id, name]) => ({
+      id,
+      name,
+      count: batchItems.value.filter((item) => (item.batchGroupId || 1) === id).length,
+    }))
+})
 
 function loadClientUser() {
   const storageKey = 'pptToVideoClientUser'
@@ -292,11 +308,23 @@ function makeBatchId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function batchGroupName(groupId) {
+  return `目录${groupId || 1}`
+}
+
+function createBatchGroup() {
+  batchGroupCounter.value += 1
+  batchActiveGroupId.value = batchGroupCounter.value
+}
+
 function createBatchItem(file) {
+  const groupId = batchActiveGroupId.value
   return {
     id: makeBatchId(),
     file,
     name: file.name,
+    batchGroupId: groupId,
+    batchGroupName: batchGroupName(groupId),
     uploadId: '',
     jobId: '',
     slides: null,
@@ -355,6 +383,8 @@ function clearBatchQueue() {
   batchItems.value.forEach((item) => stopBatchPolling(item.id))
   batchItems.value = []
   batchExpandedId.value = ''
+  batchActiveGroupId.value = 1
+  batchGroupCounter.value = 1
 }
 
 function pushBatchLog(item, text, state = '进行中') {
@@ -381,6 +411,15 @@ function batchStatusClass(item) {
     failed: failedStatuses.includes(item.status),
     done: item.statusTone === 'done',
   }
+}
+
+function isBatchGroupBlocked(item) {
+  const currentGroupId = item.batchGroupId || 1
+  return batchItems.value.some((candidate) => {
+    const candidateGroupId = candidate.batchGroupId || 1
+    return candidateGroupId < currentGroupId
+      && (isBatchAutoRunnableStatus(candidate.status) || candidate.statusTone === 'running')
+  })
 }
 
 function isBatchRunnableStatus(status) {
@@ -410,8 +449,11 @@ async function maybeStartNextBatchItem() {
   if (!batchAutoRun.value && !hasQueuedWaitingItem) return
   while (hasBatchCapacity()) {
     const nextItem = batchItems.value.find((item) =>
-      (item.queuedStart && item.status === '等待中')
-      || (batchAutoRun.value && isBatchAutoRunnableStatus(item.status)),
+      !isBatchGroupBlocked(item)
+      && (
+        (item.queuedStart && item.status === '等待中')
+        || (batchAutoRun.value && isBatchAutoRunnableStatus(item.status))
+      ),
     )
     if (!nextItem) break
     if (nextItem.queuedRetry) {
@@ -467,6 +509,14 @@ async function startBatchItem(item, options = {}) {
     item.statusTone = 'muted'
     item.queuedStart = true
     pushBatchLog(item, `当前并发上限为 ${batchConcurrency.value}，已加入等待队列，空位释放后会自动开始。`, '待处理')
+    batchExpandedId.value = item.id
+    return false
+  }
+  if (!force && isBatchGroupBlocked(item)) {
+    item.status = '等待中'
+    item.statusTone = 'muted'
+    item.queuedStart = true
+    pushBatchLog(item, `已加入 ${item.batchGroupName}，会等前面的目录任务完成后自动开始。`, '待处理')
     batchExpandedId.value = item.id
     return false
   }
@@ -1356,21 +1406,36 @@ watch(activeTab, (value) => {
 
     <template v-else-if="activeTab === 'batch'">
       <section class="batch-layout">
-        <article class="card batch-upload">
-          <h2>批量上传</h2>
-          <label
-            class="dropzone batch-dropzone"
-            :class="{ dragging: isDragging }"
+	        <article class="card batch-upload">
+	          <h2>批量上传</h2>
+	          <div class="batch-directory-bar">
+	            <span>加入目录</span>
+	            <div class="batch-mode-switch batch-mode-inline">
+	              <button
+	                v-for="group in batchGroups"
+	                :key="group.id"
+	                class="strategy-pill"
+	                :class="{ active: batchActiveGroupId === group.id }"
+	                @click="batchActiveGroupId = group.id"
+	              >
+	                {{ group.name }}{{ group.count ? ` · ${group.count}` : '' }}
+	              </button>
+	              <button class="utility compact" @click="createBatchGroup">新建目录</button>
+	            </div>
+	          </div>
+	          <label
+	            class="dropzone batch-dropzone"
+	            :class="{ dragging: isDragging }"
             @dragenter.prevent="isDragging = true"
             @dragover.prevent="isDragging = true"
             @dragleave.prevent="isDragging = false"
             @drop.prevent="onBatchDrop"
           >
-            <input ref="batchFileInput" type="file" accept=".pptx" multiple @change="onBatchFilesChange" />
-            <FileUp :size="22" />
-            <strong>拖入多个 PPTX，或点击选择文件</strong>
-            <span>{{ batchItems.length ? `已加入 ${batchItems.length} 个文件` : '支持一次处理多份课件' }}</span>
-          </label>
+	            <input ref="batchFileInput" type="file" accept=".pptx" multiple @change="onBatchFilesChange" />
+	            <FileUp :size="22" />
+	            <strong>拖入多个 PPTX，或点击选择文件</strong>
+	            <span>{{ batchItems.length ? `当前加入 ${batchActiveGroupName}，队列共 ${batchItems.length} 个文件` : `当前加入 ${batchActiveGroupName}` }}</span>
+	          </label>
           <div class="upload-actions">
             <button class="primary" @click="startAllBatchItems">
               <LoaderCircle v-if="isBatchStarting" :size="16" class="spin" />
@@ -1593,11 +1658,12 @@ watch(activeTab, (value) => {
             </div>
             <div v-for="item in batchItems" :key="item.id" class="queue-item">
               <div class="queue-row">
-                <span class="queue-file">
-                  <strong>{{ item.name }}</strong>
-                  <small>{{ item.latestLog }}</small>
-                </span>
-                <span class="muted">{{ item.slides ? `${item.slides} 页` : '待分析' }}</span>
+	                <span class="queue-file">
+	                  <strong>{{ item.name }}</strong>
+	                  <small>{{ item.latestLog }}</small>
+	                </span>
+	                <span class="muted">{{ item.batchGroupName || '目录1' }}</span>
+	                <span class="muted">{{ item.slides ? `${item.slides} 页` : '待分析' }}</span>
                 <span :class="batchStatusClass(item)">{{ item.status }}</span>
                 <div class="queue-actions">
                   <a v-if="item.output || item.pptOutput" class="primary compact" :href="batchOutputUrl(item)">
