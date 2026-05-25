@@ -618,15 +618,16 @@ def download_name_for_upload(path: Path, suffix: str | None = None) -> str:
     return f"{stem}{suffix}"
 
 
-def unique_zip_member_name(used_names: set[str], folder: str, filename: str) -> str:
+def unique_zip_member_name(used_names: set[str], root_folder: str, group_name: str, filename: str) -> str:
+    safe_group = client_filename(group_name, "未命名目录")
     safe_name = client_filename(filename, "download")
     path = Path(safe_name)
     stem = path.stem or "download"
     suffix = path.suffix
-    candidate = f"{folder}/{safe_name}"
+    candidate = f"{root_folder}/{safe_group}/{safe_name}"
     counter = 2
     while candidate in used_names:
-        candidate = f"{folder}/{stem}-{counter}{suffix}"
+        candidate = f"{root_folder}/{safe_group}/{stem}-{counter}{suffix}"
         counter += 1
     used_names.add(candidate)
     return candidate
@@ -1176,7 +1177,8 @@ def download_batch_zip():
             if not source_path.exists() or not source_path.is_file():
                 continue
             download_name = item.get("download_name") or source_path.name
-            member_name = unique_zip_member_name(used_names, folder_name, str(download_name))
+            group_name = item.get("group_name") or "未命名目录"
+            member_name = unique_zip_member_name(used_names, folder_name, str(group_name), str(download_name))
             archive.write(source_path, member_name)
             packed_count += 1
 

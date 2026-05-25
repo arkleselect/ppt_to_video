@@ -725,6 +725,10 @@ input:focus {
   font-size: 14px;
 }
 
+.batch-directory-input {
+  max-width: 280px;
+}
+
 .batch-concurrency {
   white-space: nowrap;
 }

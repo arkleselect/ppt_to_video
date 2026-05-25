@@ -27,6 +27,7 @@ const batchAutoRetry = ref(true)
 const batchMaxAutoRetries = 2
 const batchActiveGroupId = ref(1)
 const batchGroupCounter = ref(1)
+const batchGroupNames = ref({ 1: '目录1' })
 const isDragging = ref(false)
 const isAnalyzing = ref(false)
 const isPreviewing = ref(false)
@@ -138,7 +139,7 @@ const batchActiveGroupName = computed(() => batchGroupName(batchActiveGroupId.va
 const batchGroups = computed(() => {
   const groups = new Map([[batchActiveGroupId.value, batchActiveGroupName.value]])
   batchItems.value.forEach((item) => {
-    groups.set(item.batchGroupId || 1, item.batchGroupName || batchGroupName(item.batchGroupId || 1))
+    groups.set(item.batchGroupId || 1, batchGroupName(item.batchGroupId || 1))
   })
   return [...groups.entries()]
     .sort(([left], [right]) => left - right)
@@ -309,11 +310,29 @@ function makeBatchId() {
 }
 
 function batchGroupName(groupId) {
-  return `目录${groupId || 1}`
+  const id = groupId || 1
+  return (batchGroupNames.value[id] || `目录${id}`).trim() || `目录${id}`
+}
+
+function renameBatchGroup(groupId, value) {
+  const id = groupId || 1
+  batchGroupNames.value = {
+    ...batchGroupNames.value,
+    [id]: value,
+  }
+  batchItems.value.forEach((item) => {
+    if ((item.batchGroupId || 1) === id) {
+      item.batchGroupName = batchGroupName(id)
+    }
+  })
 }
 
 function createBatchGroup() {
   batchGroupCounter.value += 1
+  batchGroupNames.value = {
+    ...batchGroupNames.value,
+    [batchGroupCounter.value]: batchGroupName(batchGroupCounter.value),
+  }
   batchActiveGroupId.value = batchGroupCounter.value
 }
 
@@ -385,6 +404,7 @@ function clearBatchQueue() {
   batchExpandedId.value = ''
   batchActiveGroupId.value = 1
   batchGroupCounter.value = 1
+  batchGroupNames.value = { 1: '目录1' }
 }
 
 function pushBatchLog(item, text, state = '进行中') {
@@ -780,6 +800,7 @@ function batchOutputFilePayload(item) {
   return {
     filename: item.resultKind === 'script' ? item.pptOutput : item.output,
     download_name: item.resultKind === 'script' ? item.pptDownloadName : item.outputDownloadName,
+    group_name: item.batchGroupName || batchGroupName(item.batchGroupId || 1),
   }
 }
 
@@ -1422,6 +1443,11 @@ watch(activeTab, (value) => {
 	              </button>
 	              <button class="utility compact" @click="createBatchGroup">新建目录</button>
 	            </div>
+	            <input
+	              class="batch-directory-input"
+	              :value="batchActiveGroupName"
+	              @input="renameBatchGroup(batchActiveGroupId, $event.target.value)"
+	            />
 	          </div>
 	          <label
 	            class="dropzone batch-dropzone"
